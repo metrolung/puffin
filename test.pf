@@ -1,0 +1,27 @@
+
+
+
+
+
+
+
+struct Vec2 {
+    int x,
+    int y
+}
+
+
+
+
+
+void main() {
+    // comment hopefully works
+    int x = 4;
+    str y = "hello world";
+}
+
+
+
+
+const str HELLO = WORLD;
+const str WORLD = "hello world";
