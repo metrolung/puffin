@@ -5,6 +5,9 @@ use compiler::compiler::parser::parse;
 use compiler::compiler::semantics::semantic_check;
 
 use clap::Parser;
+use compiler::common::value::{CallableObjectHeader, GCStage, ObjectHeader, Value};
+use compiler::compiler::codegen::codegen;
+use compiler::vm::callable::{FunctionHelper, Invoker, PuffinCallable, RuntimeError};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -52,5 +55,63 @@ fn main() {
         }
     };
 
-    println!("{:#?}", typed_ast)
+    println!("{:#?}", typed_ast);
+
+    let mut program = codegen(typed_ast).unwrap();
+
+    // let garbage_collector = GarbageCollector::default();
+    //
+    // let print_int_func = CallableObjectHeader::new(
+    //     GCStage::Static,
+    //     Box::new(
+    //         |_, params: Vec<Value>| {
+    //             println!("{:?}", params[0]);
+    //             Ok(vec![])
+    //         }
+    //     ) as Box<dyn PuffinCallable>
+    // );
+
+    let print_str_func = FunctionHelper::new(|_, params: Vec<Value<'_>>| {
+        println!("{}", params[0].cast_string());
+        Ok(vec![])
+    });
+
+    let print_int_func = FunctionHelper::new(|_, params: Vec<Value<'_>>| {
+        println!("{}", params[0].cast_int());
+        Ok(vec![])
+    });
+
+    let print_debug_func = FunctionHelper::new(|_, params: Vec<Value<'_>>| {
+        println!("{:?}", params[0]);
+        Ok(vec![])
+    });
+
+    // let print_str_func = CallableObjectHeader::new(
+    //     GCStage::Static,
+    //     Box::new(
+    //         |_, params: Vec<Value<'_>>| {
+    //             println!("{:?}", params[0]);
+    //             Ok(vec![])
+    //         }
+    //     ) as Box<dyn PuffinCallable>
+    // );
+
+    program.link_function("package::printstr".to_string(), print_str_func).expect("linking error");
+    program.link_function("package::printi".to_string(), print_int_func).expect("linking error");
+    program.link_function("package::print_debug".to_string(), print_debug_func).expect("linking error");
+
+    println!("{:#?}", program);
+    
+    program.execute("package::main").expect("runtime error");
+
+    //
+    // let mut linker = HashLinker::new();
+    // linker.link(
+    //     "print".to_string(),
+    //     Value::function(&print_func as *const GCFunction)
+    // );
+
+    // let execution_result = result.execute(&linker);
+
+    // drop(print_func)
 }

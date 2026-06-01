@@ -75,6 +75,8 @@ pub enum TokenKind {
     RParen,
     LCurly,
     RCurly,
+    LBracket,
+    RBracket,
     Comma,
     Colon,
     Dot,
@@ -84,12 +86,19 @@ pub enum TokenKind {
     Multiply,
     Divide,
     Percent,
-    Equals,
     Semicolon,
+    Bang,
+    Eq,
+    EqEq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
 
     If,
     Else,
-    Auto,
+    Let,
     Struct,
     Interface,
     Impl,
@@ -97,6 +106,8 @@ pub enum TokenKind {
     True,
     False,
     Return,
+    Export,
+    As,
 
     Integer(isize),
     UInteger(usize),
@@ -191,7 +202,8 @@ impl<'ctx> LexContext<'ctx> {
 
 
 fn read_identifier(ctx: &mut LexContext) -> Result<()> {
-    if !ctx.peek().unwrap().is_alphabetic() {
+    let peeked = ctx.peek().unwrap();
+    if !peeked.is_alphabetic() && peeked != &'_' {
         return Ok(());
     }
 
@@ -202,7 +214,7 @@ fn read_identifier(ctx: &mut LexContext) -> Result<()> {
     let mut identifier = start.char().to_string();
 
     while let Some(peeked) = ctx.peek() {
-        if !peeked.is_alphanumeric() { break };
+        if !peeked.is_alphanumeric() && peeked != &'_' { break };
 
         let next = ctx.next().unwrap();
 
@@ -213,13 +225,15 @@ fn read_identifier(ctx: &mut LexContext) -> Result<()> {
     let kind = match identifier.as_str() {
         "if" => TokenKind::If,
         "else" => TokenKind::Else,
-        "auto" => TokenKind::Auto,
+        "let" => TokenKind::Let,
         "impl" => TokenKind::Impl,
         "struct" => TokenKind::Struct,
         "const" => TokenKind::Const,
         "true" => TokenKind::True,
         "false" => TokenKind::False,
         "return" => TokenKind::Return,
+        "export" => TokenKind::Export,
+        "as" => TokenKind::As,
         _ => TokenKind::Identifier(identifier),
     };
 
@@ -339,7 +353,11 @@ fn read_number(ctx: &mut LexContext) -> Result<()> {
                 kind = TokenKind::Float(fsize::from_str(&number)?);
             },
             _ => {
-                kind = TokenKind::Integer(isize::from_str(&number)?);
+                if decimal {
+                    kind = TokenKind::Float(fsize::from_str(&number)?);
+                } else {
+                    kind = TokenKind::Integer(isize::from_str(&number)?);
+                }
             }
         }
     } else if decimal {
@@ -370,10 +388,10 @@ fn read_symbol_or_comment(ctx: &mut LexContext) -> Result<()> {
         '/' => {
             let pos = ctx.next().unwrap().pos();
 
-            if ctx.peek().copied() == Some('/') {
+            if ctx.peek() == Some(&'/') {
                 ctx.next();
 
-                while ctx.peek().copied() != Some('\n') {
+                while ctx.peek() != Some(&'\n') {
                     ctx.next();
                 }
 
@@ -390,12 +408,53 @@ fn read_symbol_or_comment(ctx: &mut LexContext) -> Result<()> {
             return Ok(())
         },
         '%' => TokenKind::Percent,
+        '!' => TokenKind::Bang,
         ':' => TokenKind::Colon,
-        '=' => TokenKind::Equals,
+
+        // i know this code is so redundant but im lazy
+        '=' => {
+            let pos = ctx.next().unwrap().pos();
+
+            if ctx.peek() == Some(&'=') {
+                let end_pos = ctx.next().unwrap().pos();
+
+                ctx.add_token(Token { span: pos.span(&end_pos), kind: TokenKind::EqEq })
+            } else {
+                ctx.add_token(Token { span: pos.to_span(), kind: TokenKind::Eq })
+            }
+            return Ok(())
+        },
+        '<' => {
+            let pos = ctx.next().unwrap().pos();
+
+            if ctx.peek() == Some(&'=') {
+                let end_pos = ctx.next().unwrap().pos();
+
+                ctx.add_token(Token { span: pos.span(&end_pos), kind: TokenKind::Le })
+            } else {
+                ctx.add_token(Token { span: pos.to_span(), kind: TokenKind::Lt })
+            }
+            return Ok(())
+        },
+        '>' => {
+            let pos = ctx.next().unwrap().pos();
+
+            if ctx.peek() == Some(&'=') {
+                let end_pos = ctx.next().unwrap().pos();
+
+                ctx.add_token(Token { span: pos.span(&end_pos), kind: TokenKind::Ge })
+            } else {
+                ctx.add_token(Token { span: pos.to_span(), kind: TokenKind::Gt })
+            }
+            return Ok(())
+        },
+
         '(' => TokenKind::LParen,
         ')' => TokenKind::RParen,
         '{' => TokenKind::LCurly,
         '}' => TokenKind::RCurly,
+        '[' => TokenKind::LBracket,
+        ']' => TokenKind::RBracket,
         ',' => TokenKind::Comma,
         ';' => TokenKind::Semicolon,
         '.' => TokenKind::Dot,

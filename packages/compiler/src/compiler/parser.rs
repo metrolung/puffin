@@ -7,19 +7,30 @@ use crate::compiler::lexer::{Token, TokenKind};
 use crate::compiler::position::{Position, SpanPosition};
 use crate::common::fsize::fsize;
 
-#[derive(Debug)]
-pub enum BinopKind {
-    Add, Sub, Div, Mod, Mul
+#[derive(Debug, Clone)]
+pub enum BinOpKind {
+    Add, Sub, Mul, Div,
+    Eq, Ne,
+    Lt,
+    Le, Gt,
+    Ge
+}
+
+#[derive(Debug, Clone)]
+pub enum UnOpKind {
+    Pos, Neg,
+    Not
 }
 
 #[derive(Debug)]
-pub enum ExprKind {
+pub enum ValueExprKind {
     Variable(String),
-    AssignVariable(Option<Box<Expr>>, String, Box<Expr>),
-    ReassignVariable(Box<Expr>, Box<Expr>),
-    IdentifierAccess(Box<Expr>, String),
-    IntegerAccess(Box<Expr>, usize),
-    Tuple(Vec<Expr>),
+    AssignVariable(String, Option<Box<TypeExpr>>, Box<ValueExpr>),
+    ReassignVariable(Box<ValueExpr>, Box<ValueExpr>),
+    IdentifierAccess(Box<ValueExpr>, String),
+    IntegerAccess(Box<ValueExpr>, usize),
+    Tuple(Vec<ValueExpr>),
+    Call(Box<ValueExpr>, Vec<ValueExpr>),
     LitStr(String),
     LitInt(isize),
     LitUInt(usize),
@@ -27,77 +38,92 @@ pub enum ExprKind {
     LitByte(u8),
     LitChar(char),
     LitBool(bool),
-    LitUnit,
-    Return(Box<Expr>),
-    BinOp(Box<Expr>, Box<Expr>, BinopKind),
-    Block(Vec<Expr>, Option<Box<Expr>>),
+    Return(Option<Box<ValueExpr>>),
+    Cast(Box<ValueExpr>, Box<TypeExpr>),
+    BinOp(BinOpKind, Box<ValueExpr>, Box<ValueExpr>),
+    UnOp(UnOpKind, Box<ValueExpr>),
+    Block(Vec<ValueExpr>, Option<Box<ValueExpr>>),
+    If(Box<ValueExpr>, Box<ValueExpr>, Option<Box<ValueExpr>>),
 }
 
-impl ExprKind {
-    fn expr(self, span: SpanPosition) -> Expr {
-        Expr { span, kind: self }
+impl ValueExprKind {
+    fn expr(self, span: SpanPosition) -> ValueExpr {
+        ValueExpr { span, kind: self }
     }
 }
 
 #[derive(Debug)]
-pub struct Expr {
+pub struct ValueExpr {
     pub span: SpanPosition,
-    pub kind: ExprKind,
+    pub kind: ValueExprKind,
+}
+
+#[derive(Debug)]
+pub enum TypeExprKind {
+    Variable(String),
+    Tuple(Vec<TypeExpr>),
+}
+
+impl TypeExprKind {
+    fn expr(self, span: SpanPosition) -> TypeExpr {
+        TypeExpr { span, kind: self }
+    }
+}
+
+#[derive(Debug)]
+pub struct TypeExpr {
+    pub span: SpanPosition,
+    pub kind: TypeExprKind,
 }
 
 
 #[derive(Debug)]
-pub enum DefinitionKind {
+pub enum StatementKind {
     FunctionStatement {
-        binding: Binding,
-        param_bindings: Vec<Binding>,
-        statement: Option<Expr>
+        name: String,
+        return_type: Option<TypeExpr>,
+        param_bindings: Vec<(String, TypeExpr)>,
+        statement: Option<ValueExpr>,
+        export: bool
     },
     StructStatement {
         name: String,
-        fields: Vec<Binding>,
+        fields: Vec<(String, TypeExpr)>,
         implementations: Vec<Implementation>
     },
     ConstStatement {
-        binding: Binding,
-        value: Expr,
+        name: String,
+        const_type: TypeExpr,
+        value: ValueExpr,
     },
     InterfaceStatement {
         name: String,
-        functions: Vec<Definition>
+        functions: Vec<Statement>
     }
 }
 
 #[derive(Debug)]
-pub struct Definition {
+pub struct Statement {
     pub span: SpanPosition,
-    pub kind: DefinitionKind,
+    pub kind: StatementKind,
 }
 
-impl DefinitionKind {
-    fn span(self, span: SpanPosition) -> Definition {
-        Definition { kind: self, span }
+impl StatementKind {
+    fn statement(self, span: SpanPosition) -> Statement {
+        Statement { kind: self, span }
     }
 }
 
 #[derive(Debug)]
 pub struct Implementation {
     pub span: SpanPosition,
-    pub implements: Expr,
-    pub definitions: Vec<Definition>
+    pub implements: ValueExpr,
+    pub definitions: Vec<Statement>
 }
-
-#[derive(Debug)]
-pub struct Binding {
-    pub type_: Option<Expr>,
-    pub name: String,
-    pub span: SpanPosition,
-}
-
 
 pub struct ParseContext<'ctx> {
     tokens: Peekable<Iter<'ctx, Token>>,
-    definitions: Vec<Definition>,
+    definitions: Vec<Statement>,
 }
 
 impl<'ctx> ParseContext<'ctx> {
@@ -112,7 +138,7 @@ impl<'ctx> ParseContext<'ctx> {
 
 #[derive(Debug)]
 pub struct AST {
-    pub definitions: Vec<Definition>,
+    pub definitions: Vec<Statement>,
 }
 
 fn has_next(ctx: &mut ParseContext) -> bool {
@@ -167,15 +193,50 @@ fn is_any_upcoming(ctx: &mut ParseContext, kind: &[TokenKind]) -> Result<bool> {
     }
 }
 
-fn tuple(ctx: &mut ParseContext) -> Result<Expr> {
+fn type_tuple(ctx: &mut ParseContext) -> Result<TypeExpr> {
+    let start = eat(ctx, TokenKind::LBracket)?.span;
+
+    if is_upcoming(ctx, TokenKind::RBracket)? {
+        let end = next(ctx)?.span;
+        return Ok(TypeExprKind::Tuple(vec![]).expr(start.span(&end)));
+    }
+
+    let value0 = type_expr(ctx)?;
+
+    let comma_or_paren = next(ctx)?;
+
+    match &comma_or_paren.kind {
+        TokenKind::RParen => { Ok(value0) }
+        TokenKind::Comma => {
+            let mut values = vec![value0];
+
+            while !is_upcoming(ctx, TokenKind::RBracket)? {
+                values.push(type_expr(ctx)?);
+
+                if !is_upcoming(ctx, TokenKind::Comma)? {
+                    break;
+                }
+
+                eat(ctx, TokenKind::Comma)?;
+            }
+
+            let end = eat(ctx, TokenKind::RBracket)?.span;
+
+            Ok(TypeExprKind::Tuple(values).expr(start.span(&end)))
+        }
+        _ => bail!("expected , or )")
+    }
+}
+
+fn value_tuple(ctx: &mut ParseContext) -> Result<ValueExpr> {
     let start = eat(ctx, TokenKind::LParen)?.span;
 
     if is_upcoming(ctx, TokenKind::RParen)? {
         let end = next(ctx)?.span;
-        return Ok(ExprKind::LitUnit.expr(start.span(&end)));
+        return Ok(ValueExprKind::Tuple(vec![]).expr(start.span(&end)));
     }
 
-    let value0 = expr(ctx)?;
+    let value0 = value_expr(ctx)?;
 
     let comma_or_paren = next(ctx)?;
 
@@ -185,7 +246,7 @@ fn tuple(ctx: &mut ParseContext) -> Result<Expr> {
             let mut values = vec![value0];
 
             while !is_upcoming(ctx, TokenKind::RParen)? {
-                values.push(value(ctx)?);
+                values.push(value_expr(ctx)?);
 
                 if !is_upcoming(ctx, TokenKind::Comma)? {
                     break;
@@ -196,13 +257,13 @@ fn tuple(ctx: &mut ParseContext) -> Result<Expr> {
 
             let end = eat(ctx, TokenKind::RParen)?.span;
 
-            Ok(ExprKind::Tuple(values).expr(start.span(&end)))
+            Ok(ValueExprKind::Tuple(values).expr(start.span(&end)))
         }
-        _ => bail!("expected , or )")
+        _ => bail!("expected , or ]")
     }
 }
 
-fn block(ctx: &mut ParseContext) -> Result<Expr> {
+fn block(ctx: &mut ParseContext) -> Result<ValueExpr> {
     let start = eat(ctx, TokenKind::LCurly)?.span;
 
     let mut statements = vec![];
@@ -211,12 +272,12 @@ fn block(ctx: &mut ParseContext) -> Result<Expr> {
         if is_upcoming(ctx, TokenKind::Semicolon)? {
             next(ctx)?;
         } else {
-            let next_statement = expr(ctx)?;
+            let next_statement = value_expr(ctx)?;
             if is_upcoming(ctx, TokenKind::RCurly)? {
                 let end = next(ctx)?.span;
                 let span = start.span(&end);
 
-                return Ok(ExprKind::Block(statements, Some(Box::new(next_statement))).expr(span))
+                return Ok(ValueExprKind::Block(statements, Some(Box::new(next_statement))).expr(span))
             }
             statements.push(next_statement);
             eat(ctx, TokenKind::Semicolon)?;
@@ -226,201 +287,345 @@ fn block(ctx: &mut ParseContext) -> Result<Expr> {
     let end = eat(ctx, TokenKind::RCurly)?.span;
     let span = start.span(&end);
 
-    Ok(ExprKind::Block(statements, None).expr(span))
+    Ok(ValueExprKind::Block(statements, None).expr(span))
 }
 
-fn value(ctx: &mut ParseContext) -> Result<Expr> {
-    if is_upcoming(ctx, TokenKind::LParen)? {
-        tuple(ctx)
-    } else if is_upcoming(ctx, TokenKind::LCurly)? {
-        block(ctx)
-    } else if is_upcoming(ctx, TokenKind::Return)? {
-        let start = next(ctx)?.span;
-        let expr = expr(ctx)?;
-        let span = start.span(&expr.span);
-        return Ok(ExprKind::Return(Box::new(expr)).expr(span));
+fn type_expr(ctx: &mut ParseContext) -> Result<TypeExpr> {
+    if is_upcoming(ctx, TokenKind::LBracket)? {
+        type_tuple(ctx)
     } else {
         let token = next(ctx)?;
 
         match &token.kind {
             TokenKind::Identifier(name) =>
-                Ok(ExprKind::Variable(name.clone()).expr(token.span)),
-            TokenKind::String(s) =>
-                Ok(ExprKind::LitStr(s.clone()).expr(token.span)),
-            TokenKind::Integer(i) =>
-                Ok(ExprKind::LitInt(*i).expr(token.span)),
-            TokenKind::UInteger(i) =>
-                Ok(ExprKind::LitUInt(*i).expr(token.span)),
-            TokenKind::Float(f) =>
-                Ok(ExprKind::LitFloat(*f).expr(token.span)),
-            TokenKind::Char(c) =>
-                Ok(ExprKind::LitChar(*c).expr(token.span)),
-            TokenKind::Byte(b) =>
-                Ok(ExprKind::LitByte(*b).expr(token.span)),
-            TokenKind::True =>
-                Ok(ExprKind::LitBool(true).expr(token.span)),
-            TokenKind::False =>
-                Ok(ExprKind::LitBool(false).expr(token.span)),
-            _ => bail!("expected value")
+                Ok(TypeExprKind::Variable(name.clone()).expr(token.span)),
+            _ => bail!("expected type")
         }
     }
 }
 
-fn access(ctx: &mut ParseContext) -> Result<Expr> {
+fn value(ctx: &mut ParseContext) -> Result<ValueExpr> {
+    let peeked = &peek(ctx)?.kind;
+
+    match peeked {
+        TokenKind::LParen => value_tuple(ctx),
+        TokenKind::LCurly => block(ctx),
+        TokenKind::Plus | TokenKind::Minus | TokenKind::Bang => {
+            let op = next(ctx)?;
+            let unop_kind = match op.kind {
+                TokenKind::Plus => UnOpKind::Pos,
+                TokenKind::Minus => UnOpKind::Neg,
+                TokenKind::Bang => UnOpKind::Not,
+                _ => unreachable!()
+            };
+
+            let start = op.span;
+            let value = access(ctx)?;
+
+            let span = start.span(&value.span);
+
+            Ok(ValueExprKind::UnOp(unop_kind, Box::new(value)).expr(span))
+        }
+        TokenKind::Return => {
+            let start = next(ctx)?.span;
+
+            if is_any_upcoming(ctx, &[TokenKind::Semicolon, TokenKind::RCurly])? {
+                let end = next(ctx)?.span;
+                let span = start.span(&end);
+
+                return Ok(ValueExprKind::Return(None).expr(span))
+            }
+
+            let expr = value_expr(ctx)?;
+            let span = start.span(&expr.span);
+            Ok(ValueExprKind::Return(Some(Box::new(expr))).expr(span))
+        }
+        TokenKind::If => {
+            let start = next(ctx)?.span;
+
+            let cond = if is_upcoming(ctx, TokenKind::Bang)? {
+                let start = next(ctx)?.span;
+                eat(ctx, TokenKind::LParen)?;
+                let cond = value_expr(ctx)?;
+                let end = eat(ctx, TokenKind::RParen)?.span;
+                ValueExprKind::UnOp(UnOpKind::Neg, Box::new(cond)).expr(start.span(&end))
+            } else {
+                eat(ctx, TokenKind::LParen)?;
+                let cond = value_expr(ctx)?;
+                eat(ctx, TokenKind::RParen)?;
+                cond
+            };
+
+            let block = value_expr(ctx)?;
+
+            if is_upcoming(ctx, TokenKind::Else)? {
+                next(ctx)?;
+                let else_block = value_expr(ctx)?;
+                let span = start.span(&else_block.span);
+                Ok(ValueExprKind::If(Box::new(cond), Box::new(block), Some(Box::new(else_block))).expr(span))
+            } else {
+                let span = start.span(&block.span);
+                Ok(ValueExprKind::If(Box::new(cond), Box::new(block), None).expr(span))
+            }
+        }
+        _ => {
+            let token = next(ctx)?;
+
+            match &token.kind {
+                TokenKind::Identifier(name) =>
+                    Ok(ValueExprKind::Variable(name.clone()).expr(token.span)),
+                TokenKind::String(s) =>
+                    Ok(ValueExprKind::LitStr(s.clone()).expr(token.span)),
+                TokenKind::Integer(i) =>
+                    Ok(ValueExprKind::LitInt(*i).expr(token.span)),
+                TokenKind::UInteger(i) =>
+                    Ok(ValueExprKind::LitUInt(*i).expr(token.span)),
+                TokenKind::Float(f) =>
+                    Ok(ValueExprKind::LitFloat(*f).expr(token.span)),
+                TokenKind::Char(c) =>
+                    Ok(ValueExprKind::LitChar(*c).expr(token.span)),
+                TokenKind::Byte(b) =>
+                    Ok(ValueExprKind::LitByte(*b).expr(token.span)),
+                TokenKind::True =>
+                    Ok(ValueExprKind::LitBool(true).expr(token.span)),
+                TokenKind::False =>
+                    Ok(ValueExprKind::LitBool(false).expr(token.span)),
+                _ => bail!("expected value")
+            }
+        }
+    }
+}
+
+fn access(ctx: &mut ParseContext) -> Result<ValueExpr> {
     let mut left = value(ctx)?;
 
-    while peek(ctx)?.kind == TokenKind::Dot {
-        next(ctx)?;
+    while is_upcoming(ctx, TokenKind::Dot)? || is_upcoming(ctx, TokenKind::LParen)? {
+        match next(ctx)?.kind {
+            TokenKind::Dot => {
+                let index = next(ctx)?;
 
-        let index = next(ctx)?;
+                match &index.kind {
+                    TokenKind::Identifier(s) => {
+                        left = ValueExprKind::IdentifierAccess(Box::new(left), s.clone()).expr(index.span)
+                    }
+                    TokenKind::Integer(i) => {
+                        left = ValueExprKind::IntegerAccess(Box::new(left), (*i) as usize).expr(index.span)
+                    }
+                    TokenKind::Byte(i) => {
+                        left = ValueExprKind::IntegerAccess(Box::new(left), (*i) as usize).expr(index.span)
+                    }
+                    TokenKind::UInteger(i) => {
+                        left = ValueExprKind::IntegerAccess(Box::new(left), *i).expr(index.span)
+                    }
+                    _ => bail!("expected an identifier or an integer")
+                }
+            }
+            TokenKind::LParen => {
+                let mut params = vec![];
+                let mut end = left.span;
 
-        match &index.kind {
-            TokenKind::Identifier(s) => {
-                left = ExprKind::IdentifierAccess(Box::new(left), s.clone()).expr(index.span)
+                while !is_upcoming(ctx, TokenKind::RParen)? {
+                    let expr = value_expr(ctx)?;
+                    end = expr.span;
+                    params.push(expr);
+
+                    if is_upcoming(ctx, TokenKind::Comma)? {
+                        next(ctx)?;
+                    } else {
+                        break
+                    }
+                }
+
+                eat(ctx, TokenKind::RParen)?;
+
+                let span = left.span.span(&end);
+                left = ValueExprKind::Call(Box::new(left), params).expr(span);
             }
-            TokenKind::Integer(i) => {
-                left = ExprKind::IntegerAccess(Box::new(left), (*i) as usize).expr(index.span)
-            }
-            TokenKind::Byte(i) => {
-                left = ExprKind::IntegerAccess(Box::new(left), (*i) as usize).expr(index.span)
-            }
-            TokenKind::UInteger(i) => {
-                left = ExprKind::IntegerAccess(Box::new(left), *i).expr(index.span)
-            }
-            _ => bail!("expected an identifier or an integer")
-        }
+            _ => unreachable!()
+        };
     }
 
     Ok(left)
 }
 
-fn assignment(ctx: &mut ParseContext) -> Result<Expr> {
-    if is_upcoming(ctx, TokenKind::Auto)? {
-        let start = next(ctx)?.span;
+fn casts(ctx: &mut ParseContext) -> Result<ValueExpr> {
+    let mut left = access(ctx)?;
 
-        if let TokenKind::Identifier(name) = &next(ctx)?.kind {
-            let name = name.clone();
-
-            eat(ctx, TokenKind::Equals)?;
-            let right = expr(ctx)?;
-            let span = start.span(&right.span);
-
-            return Ok(ExprKind::AssignVariable(
-                None,
-                name,
-                Box::new(right)
-            ).expr(span))
-        } else {
-            bail!("expected identifier")
-        };
-    }
-
-    let left = access(ctx)?;
-    let peeked = peek(ctx)?;
-
-    if let TokenKind::Identifier(name) = &peeked.kind {
-        let name = name.clone();
+    while is_upcoming(ctx, TokenKind::As)? {
         next(ctx)?;
 
-        eat(ctx, TokenKind::Equals)?;
-        let right = expr(ctx)?;
-        let span = left.span.span(&right.span);
-
-        Ok(ExprKind::AssignVariable(
-            Some(Box::new(left)),
-            name.clone(),
-            Box::new(right)
-        ).expr(span))
-    } else if let TokenKind::Equals = &peeked.kind {
-        next(ctx)?;
-        let right = expr(ctx)?;
+        let right = type_expr(ctx)?;
 
         let position = left.span.span(&right.span);
-
-        Ok(ExprKind::ReassignVariable(
-            Box::new(left),
-            Box::new(right)
-        ).expr(position))
-    } else {
-        Ok(left)
+        left = ValueExprKind::Cast(Box::new(left), Box::new(right)).expr(position);
     }
+
+    Ok(left)
 }
 
-fn factors(ctx: &mut ParseContext) -> Result<Expr> {
-    let mut left = assignment(ctx)?;
+fn factors(ctx: &mut ParseContext) -> Result<ValueExpr> {
+    let mut left = casts(ctx)?;
 
-    while is_any_upcoming(ctx, &[TokenKind::Multiply, TokenKind::Divide, TokenKind::Percent])? {
+    while is_any_upcoming(ctx, &[TokenKind::Multiply, TokenKind::Divide])? {
         let token = &next(ctx)?.kind;
 
         let binop_kind = match token {
-            TokenKind::Multiply => BinopKind::Mul,
-            TokenKind::Divide => BinopKind::Div,
-            TokenKind::Percent => BinopKind::Mod,
+            TokenKind::Multiply => BinOpKind::Mul,
+            TokenKind::Divide => BinOpKind::Div,
             _ => unreachable!()
         };
 
-        let right = assignment(ctx)?;
+        let right = casts(ctx)?;
 
         let position = left.span.span(&right.span);
-        left = ExprKind::BinOp(Box::new(left), Box::new(right), binop_kind).expr(position);
+        left = ValueExprKind::BinOp(binop_kind, Box::new(left), Box::new(right)).expr(position);
     }
 
     Ok(left)
 }
 
-fn terms(ctx: &mut ParseContext) -> Result<Expr> {
+fn terms(ctx: &mut ParseContext) -> Result<ValueExpr> {
     let mut left = factors(ctx)?;
 
     while is_any_upcoming(ctx, &[TokenKind::Plus, TokenKind::Minus])? {
         let token = &next(ctx)?.kind;
 
         let binop_kind = match token {
-            TokenKind::Plus => BinopKind::Add,
-            TokenKind::Minus => BinopKind::Sub,
+            TokenKind::Plus => BinOpKind::Add,
+            TokenKind::Minus => BinOpKind::Sub,
             _ => unreachable!()
         };
 
         let right = factors(ctx)?;
 
         let position = left.span.span(&right.span);
-        left = ExprKind::BinOp(Box::new(left), Box::new(right), binop_kind).expr(position);
+        left = ValueExprKind::BinOp(binop_kind, Box::new(left), Box::new(right)).expr(position);
     }
 
     Ok(left)
 }
 
-fn expr(ctx: &mut ParseContext) -> Result<Expr> {
-    terms(ctx)
+fn comparison(ctx: &mut ParseContext) -> Result<ValueExpr> {
+    let mut left = terms(ctx)?;
+
+    while is_any_upcoming(ctx, &[TokenKind::Lt, TokenKind::Le, TokenKind::Gt, TokenKind::Ge])? {
+        let token = &next(ctx)?.kind;
+
+        let binop_kind = match token {
+            TokenKind::Lt => BinOpKind::Lt,
+            TokenKind::Le => BinOpKind::Le,
+            TokenKind::Gt => BinOpKind::Gt,
+            TokenKind::Ge => BinOpKind::Ge,
+            _ => unreachable!()
+        };
+
+        let right = terms(ctx)?;
+
+        let position = left.span.span(&right.span);
+        left = ValueExprKind::BinOp(binop_kind, Box::new(left), Box::new(right)).expr(position);
+    }
+
+    Ok(left)
 }
 
-fn binding(ctx: &mut ParseContext) -> Result<Binding> {
-    let (val_type, start_position) = if is_upcoming(ctx, TokenKind::Auto)? {
-        let span = next(ctx)?.span;
-        (None, span)
+fn equality(ctx: &mut ParseContext) -> Result<ValueExpr> {
+    let mut left = comparison(ctx)?;
+
+    while is_any_upcoming(ctx, &[TokenKind::EqEq, TokenKind::Ne])? {
+        let token = &next(ctx)?.kind;
+
+        let binop_kind = match token {
+            TokenKind::EqEq => BinOpKind::Eq,
+            TokenKind::Ne => BinOpKind::Ne,
+            _ => unreachable!()
+        };
+
+        let right = comparison(ctx)?;
+
+        let position = left.span.span(&right.span);
+        left = ValueExprKind::BinOp(binop_kind, Box::new(left), Box::new(right)).expr(position);
+    }
+
+    Ok(left)
+}
+
+fn assignment(ctx: &mut ParseContext) -> Result<ValueExpr> {
+    if is_upcoming(ctx, TokenKind::Let)? {
+        next(ctx)?;
+
+        let (name, start_position) = eat_identifier(ctx)?;
+        let name = name.clone();
+
+        if is_upcoming(ctx, TokenKind::Eq)? {
+            next(ctx)?;
+
+            let value = value_expr(ctx)?;
+            let position = start_position.span(&value.span);
+
+            Ok(ValueExprKind::AssignVariable(
+                name.clone(),
+                None,
+                Box::new(value)
+            ).expr(position))
+        } else {
+            let ty = type_expr(ctx)?;
+
+            eat(ctx, TokenKind::Eq)?;
+
+            let value = value_expr(ctx)?;
+            let position = start_position.span(&value.span);
+
+            Ok(ValueExprKind::AssignVariable(
+                name.clone(),
+                Some(Box::new(ty)),
+                Box::new(value)
+            ).expr(position))
+        }
     } else {
-        let type_node = value(ctx)?;
-        let span = type_node.span;
-        (Some(type_node), span)
+        let place = equality(ctx)?;
+
+        if is_upcoming(ctx, TokenKind::Eq)? {
+            next(ctx)?;
+
+            let value = value_expr(ctx)?;
+            let position = place.span.span(&value.span);
+
+            Ok(ValueExprKind::ReassignVariable(
+                Box::new(place),
+                Box::new(value)
+            ).expr(position))
+        } else {
+            Ok(place)
+        }
+    }
+}
+
+fn value_expr(ctx: &mut ParseContext) -> Result<ValueExpr> {
+    assignment(ctx)
+}
+
+fn func_statement(ctx: &mut ParseContext) -> Result<Statement> {
+    let exposed = if is_upcoming(ctx, TokenKind::Export)? {
+        next(ctx)?;
+        true
+    } else {
+        false
     };
 
-    let (name, end_position) = eat_identifier(ctx)?;
-
-    Ok(Binding {
-        type_: val_type,
-        name: name.clone(),
-        span: start_position.span(&end_position),
-    })
-}
-
-fn func_statement(ctx: &mut ParseContext) -> Result<Definition> {
-    let func_binding = binding(ctx)?;
+    let (func_name, start_position) = eat_identifier(ctx)?;
+    let func_name = func_name.clone();
 
     eat(ctx, TokenKind::LParen)?;
 
     let mut param_bindings = vec![];
 
     while !is_upcoming(ctx, TokenKind::RParen)? {
-        param_bindings.push(binding(ctx)?);
+        let (name, ..) = eat_identifier(ctx)?;
+        let name = name.clone();
+
+        let ty = type_expr(ctx)?;
+
+        param_bindings.push((name, ty));
 
         if !is_upcoming(ctx, TokenKind::Comma)? {
             break;
@@ -431,27 +636,59 @@ fn func_statement(ctx: &mut ParseContext) -> Result<Definition> {
 
     let end_position = eat(ctx, TokenKind::RParen)?.span;
 
-    if !is_upcoming(ctx, TokenKind::Semicolon)? {
-        let block = block(ctx)?;
-        let span = func_binding.span.span(&block.span);
+    if is_upcoming(ctx, TokenKind::Semicolon)? {
+        let position = start_position.span(&end_position);
 
-        Ok(DefinitionKind::FunctionStatement {
-            binding: func_binding,
-            param_bindings,
-            statement: Some(block),
-        }.span(span))
-    } else {
-        let span = func_binding.span.span(&end_position);
-
-        Ok(DefinitionKind::FunctionStatement {
-            binding: func_binding,
+        return Ok(StatementKind::FunctionStatement {
+            name: func_name,
+            return_type: None,
             param_bindings,
             statement: None,
-        }.span(span))
+            export: exposed,
+        }.statement(position))
     }
+
+    if is_upcoming(ctx, TokenKind::LCurly)? {
+        let block = block(ctx)?;
+        let position = start_position.span(&block.span);
+
+        return Ok(StatementKind::FunctionStatement {
+            name: func_name,
+            return_type: None,
+            param_bindings,
+            statement: Some(block),
+            export: exposed,
+        }.statement(position));
+    }
+
+    let return_type = type_expr(ctx)?;
+
+    if is_upcoming(ctx, TokenKind::LCurly)? {
+        let block = block(ctx)?;
+        let position = start_position.span(&block.span);
+
+        return Ok(StatementKind::FunctionStatement {
+            name: func_name,
+            return_type: Some(return_type),
+            param_bindings,
+            statement: Some(block),
+            export: exposed,
+        }.statement(position))
+    }
+
+    let end_pos = eat(ctx, TokenKind::Semicolon)?.span;
+    let position = start_position.span(&end_pos);
+
+    Ok(StatementKind::FunctionStatement {
+        name: func_name,
+        return_type: Some(return_type),
+        param_bindings,
+        statement: None,
+        export: exposed,
+    }.statement(position))
 }
 
-fn interface_statement(ctx: &mut ParseContext) -> Result<Definition> {
+fn interface_statement(ctx: &mut ParseContext) -> Result<Statement> {
     let start_position = eat(ctx, TokenKind::Interface)?.span;
 
     let name = eat_identifier(ctx)?.0.clone();
@@ -468,13 +705,13 @@ fn interface_statement(ctx: &mut ParseContext) -> Result<Definition> {
     let end_position = eat(ctx, TokenKind::RParen)?.span;
 
     let span = start_position.span(&end_position);
-    Ok(DefinitionKind::InterfaceStatement {
+    Ok(StatementKind::InterfaceStatement {
         name,
         functions,
-    }.span(span))
+    }.statement(span))
 }
 
-fn struct_statement(ctx: &mut ParseContext) -> Result<Definition> {
+fn struct_statement(ctx: &mut ParseContext) -> Result<Statement> {
     let start_position = eat(ctx, TokenKind::Struct)?.span;
 
     let name = eat_identifier(ctx)?.0.clone();
@@ -488,7 +725,7 @@ fn struct_statement(ctx: &mut ParseContext) -> Result<Definition> {
         if is_upcoming(ctx, TokenKind::Impl)? {
             let start = eat(ctx, TokenKind::Impl)?.span;
 
-            let implements = expr(ctx)?;
+            let implements = value_expr(ctx)?;
             let mut functions = vec![];
 
             let mut last = implements.span;
@@ -505,7 +742,9 @@ fn struct_statement(ctx: &mut ParseContext) -> Result<Definition> {
                 definitions: vec![],
             })
         } else {
-            fields.push(binding(ctx)?);
+            let name = eat_identifier(ctx)?.0.clone();
+            let ty = type_expr(ctx)?;
+            fields.push((name, ty));
             if is_upcoming(ctx, TokenKind::Comma)? {
                 next(ctx)?;
             } else if !is_any_upcoming(ctx, &[TokenKind::RCurly, TokenKind::Impl])? {
@@ -517,33 +756,34 @@ fn struct_statement(ctx: &mut ParseContext) -> Result<Definition> {
     let end_position = eat(ctx, TokenKind::RCurly)?.span;
 
     let span = start_position.span(&end_position);
-    Ok(DefinitionKind::StructStatement {
+    Ok(StatementKind::StructStatement {
         name,
         fields,
         implementations: vec![],
-    }.span(span))
+    }.statement(span))
 }
 
-fn const_statement(ctx: &mut ParseContext) -> Result<Definition> {
-    eat(ctx, TokenKind::Const)?;
+fn const_statement(ctx: &mut ParseContext) -> Result<Statement> {
+    let start_position = eat(ctx, TokenKind::Const)?.span;
 
-    let binding = binding(ctx)?;
+    let name = eat_identifier(ctx)?.0.clone();
+    let ty = type_expr(ctx)?;
 
-    eat(ctx, TokenKind::Equals)?;
+    eat(ctx, TokenKind::Eq)?;
 
-    let expr = expr(ctx)?;
-
-    let span = binding.span.span(&expr.span);
+    let expr = value_expr(ctx)?;
+    let position = start_position.span(&expr.span);
 
     eat(ctx, TokenKind::Semicolon)?;
 
-    Ok(DefinitionKind::ConstStatement {
-        binding,
+    Ok(StatementKind::ConstStatement {
+        name,
+        const_type: ty,
         value: expr,
-    }.span(span))
+    }.statement(position))
 }
 
-fn definition(ctx: &mut ParseContext) -> Result<Definition> {
+fn definition(ctx: &mut ParseContext) -> Result<Statement> {
     let Some(peeked) = ctx.peek() else {
         bail!("early eof")
     };
@@ -554,7 +794,7 @@ fn definition(ctx: &mut ParseContext) -> Result<Definition> {
         interface_statement(ctx)
     } else if peeked.kind == TokenKind::Const {
         const_statement(ctx)
-    } else if matches!(peeked.kind, TokenKind::LParen | TokenKind::Identifier(..)) {
+    } else if matches!(peeked.kind, TokenKind::LParen | TokenKind::Identifier(..) | TokenKind::Export) {
         func_statement(ctx)
     } else {
         bail!("expected definition")

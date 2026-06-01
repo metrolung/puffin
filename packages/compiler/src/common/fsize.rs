@@ -14,8 +14,8 @@ pub(crate) type target_usize = u32;
 #[cfg(target_pointer_width = "64")]
 pub(crate) type target_usize = u64;
 
-#[cfg(target_pointer_width = "32")]
-pub(crate) type uhalf = u16;
-
-#[cfg(target_pointer_width = "64")]
-pub(crate) type uhalf = u32;
+// #[cfg(target_pointer_width = "32")]
+// pub(crate) type uhalf = u16;
+//
+// #[cfg(target_pointer_width = "64")]
+// pub(crate) type uhalf = u32;

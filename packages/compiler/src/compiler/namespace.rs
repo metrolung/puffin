@@ -1,25 +1,35 @@
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter, Write};
 use std::rc::Rc;
 
-#[derive(Clone, Hash, Debug, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 struct PathNode {
     parent: Path,
     index: String,
 }
 
-#[derive(Clone, Hash, Debug, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Path(Option<Rc<PathNode>>);
 
 impl Display for Path {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if self.is_root() {
-            f.write_str("root")
+            f.write_str("")
         } else {
-            Display::fmt(&self.get_parent().unwrap(), f)?;
-            f.write_str("::")?;
+            if !self.get_parent().unwrap().is_root() {
+                Display::fmt(&self.get_parent().unwrap(), f)?;
+                f.write_str("::")?;
+            }
             f.write_str(&self.get_suffix().unwrap())
         }
+    }
+}
+
+impl Debug for Path {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Path::parse(\"")?;
+        f.write_str(&self.to_string().escape_debug().to_string())?;
+        f.write_str("\")")
     }
 }
 
@@ -39,6 +49,14 @@ impl Path {
     }
 
     pub fn subpath(&self, index: String) -> Path {
+        if index.len() == 0 {
+            panic!("empty subpath")
+        }
+
+        if index.contains("::") {
+            panic!("illegal :: in subpath")
+        }
+
         Path(Some(Rc::new(PathNode {
             parent: self.clone(),
             index,
@@ -63,6 +81,18 @@ impl Path {
         } else {
             None
         }
+    }
+
+    pub fn parse(s: String) -> Self {
+        if s.len() == 0 {
+            return Self::ROOT;
+        }
+
+        let mut path = Self::ROOT;
+        for seg in s.split("::") {
+            path = path.subpath(seg.to_string());
+        }
+        path
     }
 }
 

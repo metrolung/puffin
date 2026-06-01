@@ -5,23 +5,51 @@
 
 
 
-struct Vec2 {
-    int x,
-    int y
+//struct Vec2 {
+//    x int,
+//    y int
+//}
+
+export print_debug(s value);
+export printstr(s str);
+export printi(i int);
+
+
+fibb(n int) int {
+    if (n == 0) { return 0 };
+    if (n == 1) { return 1 };
+
+    fibb(n - 1) + fibb(n - 2)
+}
+
+factorial(n int) int {
+    if (n == 0) { return 1 };
+    if (n == 1) { return 1 };
+
+    n * factorial(n-1)
 }
 
 
+export main() {
+    printstr("\n\n\nfibonacci tests");
+    print_debug(fibb(0));
+    print_debug(fibb(1));
+    print_debug(fibb(2));
+    print_debug(fibb(3));
+    print_debug(fibb(4));
+    print_debug(fibb(5));
+    print_debug(fibb(6));
+    print_debug(fibb(7));
+    print_debug(fibb(8));
 
-
-
-void main() {
-    // comment hopefully works
-    int x = 4;
-    str y = "hello world";
+    printstr("\nfactorial tests");
+    print_debug(factorial(0));
+    print_debug(factorial(1));
+    print_debug(factorial(2));
+    print_debug(factorial(3));
+    print_debug(factorial(4));
+    print_debug(factorial(5));
+    print_debug(factorial(6));
+    print_debug(factorial(7));
+    print_debug(factorial(8));
 }
-
-
-
-
-const str HELLO = WORLD;
-const str WORLD = "hello world";

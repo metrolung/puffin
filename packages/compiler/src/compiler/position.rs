@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::fmt::{Debug, Formatter};
 
 pub trait Position {
     fn start(&self) -> PinPosition;
@@ -30,13 +31,25 @@ impl PartialOrd for PinPosition {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+//#[derive(Debug)]
+#[derive(Copy, Clone, PartialEq)]
 pub struct SpanPosition {
     pub first: PinPosition,
     pub last: PinPosition,
 }
 
+impl Debug for SpanPosition {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SpanPosition")
+    }
+}
+
 impl SpanPosition {
+    pub const DUMMY: Self = Self {
+        first: PinPosition { row: 0, col: 0, idx: 0, },
+        last: PinPosition { row: 0, col: 0, idx: 0, },
+    };
+
     pub fn len(&self) -> usize {
         self.last.idx - self.first.idx + 1
     }

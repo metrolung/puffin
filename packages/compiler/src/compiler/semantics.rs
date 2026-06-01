@@ -1,4 +1,4 @@
-use crate::compiler::parser::{AST, Binding, Definition, DefinitionKind, Expr, ExprKind, Implementation};
+use crate::compiler::parser::{AST, Statement, StatementKind, ValueExpr, ValueExprKind, Implementation, BinOpKind, TypeExpr, TypeExprKind, UnOpKind};
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
@@ -12,11 +12,12 @@ use std::thread::scope;
 
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 // use corosensei::{Coroutine, Yielder};
-use crate::common::value::{GcStage, Object, Value, ValueMeta};
+use crate::common::value::{GCStage, ObjectHeader, Value};
 
 use crate::compiler::error::CompilerError;
-use crate::compiler::position::SpanPosition;
+use crate::compiler::position::{Position, SpanPosition};
 use enum_assoc::Assoc;
+use log::error;
 use crate::common::fsize::fsize;
 use crate::compiler::namespace::{Namespace, Path};
 
@@ -25,49 +26,59 @@ use crate::compiler::namespace::{Namespace, Path};
 //     path: Path,
 // }
 
+pub type StructFields = HashMap<String, (Offset, Type)>;
 pub type StructRef = Path;
 
-#[derive(Clone, Debug)]
-struct StandardTypes {
-    int: StructRef,
-    uint: StructRef,
-    float: StructRef,
-    char: StructRef,
-    byte: StructRef,
-    str: StructRef,
-    void: StructRef,
-    bool: StructRef,
-}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Type {
-    StructObject(StructRef),
+    Struct(StructRef),
     Tuple(Vec<Type>),
+    Callable(Vec<Type>, Box<Type>),
+    Int,
+    UInt,
+    Float,
+    Char,
+    Byte,
+    Str,
+    Bool,
+    Void,
+    Value,
     Never,
 }
 
 impl Type {
+    pub fn unit() -> Self {
+        Self::Tuple(vec![])
+    }
+
     pub fn is_never(&self) -> bool {
         matches!(self, Type::Never)
     }
 
-    pub fn get_offset_of_index(&self, i: usize) -> Option<usize> {
+    pub fn is_unit(&self) -> bool {
+        self.eq(&Type::unit())
+    }
+
+    pub fn is_value(&self) -> bool {
+        self.eq(&Type::Value)
+    }
+
+    pub fn get_with_index(&self, i: usize) -> Option<(Type, Offset)> {
         match self {
-            Type::StructObject(_) => None,
             Type::Tuple(types) => {
                 let mut sum = 0;
                 for i in 0..i {
                     sum += types[i].get_size();
                 }
-                Some(sum)
+                Some((types[i].clone(), sum))
             }
-            Type::Never => None
+            _ => None
         }
     }
 
-    pub fn get_size(&self) -> usize {
+    pub fn get_size(&self) -> Offset {
         match self {
-            Type::StructObject(_) => 1,
             Type::Tuple(params) => {
                 let mut sum = 0;
                 for param in params {
@@ -76,6 +87,7 @@ impl Type {
                 sum
             },
             Type::Never => 0,
+            _ => 1,
         }
     }
 }
@@ -88,55 +100,81 @@ impl Type {
 
 type FunctionIdx = usize;
 type ConstIdx = usize;
-type LocalIdx = usize;
+type Offset = u32;
 
 #[derive(Debug, Clone)]
 enum SemanticValue {
-    LocalVariable(Type, LocalIdx),
+    LocalVariable(Type, Offset),
+    ObjectVariable(Type, Offset),
     ConstVariable(Type, ConstIdx),
-    Expr(TypedExpr, Type),
+    // Expr(TypedValueExpr, Type), // the second type is the possible returning type, not the type of the value returned by TypedExpr
 
-    Struct(StructRef),
-    StructFields(HashMap<String, (usize, Type)>),
+    Type(Type),
+    // Struct(StructRef),
+    StructFields(StructFields),
 
-    Function(Type, FunctionIdx),
+    Function {
+        param_types: Vec<Type>,
+        return_type: Type,
+        function_idx: FunctionIdx
+    }
 }
 
 #[derive(Debug, Clone)]
-pub enum TypedExprKind {
+pub enum TypedValueExprKind {
     // Value(Value),
     // String(String),
     LitStr(String),
     LitInt(isize),
     LitUInt(usize),
+    LitVoid,
     LitFloat(fsize),
     LitByte(u8),
     LitChar(char),
     LitBool(bool),
-    LitUnit,
-    Tuple(Vec<TypedExpr>),
-    IdentifierAccess(Box<TypedExpr>, String),
-    IntegerAccess(Box<TypedExpr>, usize),
-    LocalVariable(LocalIdx),
+    // Unreachable,
+    Invoke(Box<TypedValueExpr>, Vec<TypedValueExpr>),
+    Tuple(Vec<TypedValueExpr>),
+
+    ObjectAccess(Box<TypedValueExpr>, Offset),
+    LocalAccess(Offset),
+
+    TupleAccess(
+        Box<TypedValueExpr>,
+        Offset,
+    ),
+
     ConstVariable(ConstIdx),
-    AssignVariable(Box<TypedExpr>),
-    Return(Box<TypedExpr>),
-    Block(Vec<TypedExpr>, Option<Box<TypedExpr>>),
+    GetFunction(FunctionIdx),
+    // AssignVariable(Box<TypedExpr>),
+    ReassignVariable(Offset, Box<TypedValueExpr>),
+    BinOp(BinOpKind, Box<TypedValueExpr>, Box<TypedValueExpr>),
+    UnOp(UnOpKind, Box<TypedValueExpr>),
+    Return(Option<Box<TypedValueExpr>>),
+    Block(
+        Vec<TypedValueExpr>,
+        Option<Box<TypedValueExpr>>,
+        // tail_expr: Option<Box<TypedExpr>>
+    ),
+    NoOpCast(Box<TypedValueExpr>),
+    If(Box<TypedValueExpr>, Box<TypedValueExpr>, Option<Box<TypedValueExpr>>),
 }
 
 #[derive(Debug, Clone)]
-pub struct TypedExpr {
-    pub kind: TypedExprKind,
+pub struct TypedValueExpr {
+    pub kind: TypedValueExprKind,
     pub span: SpanPosition,
     pub type_: Type,
+    pub place: Offset,
 }
 
-impl TypedExprKind {
-    fn expr(self, span: SpanPosition, type_: Type) -> TypedExpr {
-        TypedExpr {
+impl TypedValueExprKind {
+    fn expr(self, span: SpanPosition, type_: Type, place: Offset) -> TypedValueExpr {
+        TypedValueExpr {
             kind: self,
             span,
             type_,
+            place
         }
     }   
 }
@@ -144,9 +182,7 @@ impl TypedExprKind {
 #[derive(Debug)]
 struct SemanticContext {
     namespace: Namespace<SemanticValue>,
-    statics: Vec<Pin<Box<Object>>>,
     resulting_ast: TypedAST,
-    standard: StandardTypes,
     errors: Vec<CompilerError>,
 }
 
@@ -192,8 +228,8 @@ struct DefinitionState {
 
 #[derive(Debug)]
 pub enum TypedDefinitionKind {
-    Function(TypedExpr),
-    Constant(TypedExpr)
+    Function(TypedValueExpr),
+    Constant(TypedValueExpr)
 }
 
 #[derive(Debug)]
@@ -203,37 +239,99 @@ pub struct TypedDefinition {
 }
 
 #[derive(Debug)]
+pub struct TypedFunction {
+    pub export_name: Option<String>,
+    pub body: Option<TypedValueExpr>
+}
+
+#[derive(Debug)]
 pub struct TypedAST {
-    pub constants: Vec<TypedExpr>,
-    pub functions: Vec<TypedExpr>,
+    pub constants: Vec<TypedValueExpr>,
+    pub functions: Vec<TypedFunction>,
 }
 
 struct DefinitionPass<'pass> {
     ctx: Rc<RefCell<SemanticContext>>,
-    def: Definition,
-    yielder: &'pass Yielder<(), DefinitionStateKind>,
+    def: Statement,
+    yielder: &'pass Yielder<(), DefinitionStateKind>
 }
 
-fn standard_types() -> StandardTypes {
-    let int = Path::ROOT.subpath("int".to_string());
-    let uint = Path::ROOT.subpath("uint".to_string());
-    let float = Path::ROOT.subpath("float".to_string());
-    let str = Path::ROOT.subpath("str".to_string());
-    let byte = Path::ROOT.subpath("byte".to_string());
-    let char = Path::ROOT.subpath("char".to_string());
-    let void = Path::ROOT.subpath("void".to_string());
-    let bool = Path::ROOT.subpath("bool".to_string());
-
-    StandardTypes {
-        int,
-        uint,
-        float,
-        str,
-        byte,
-        char,
-        void,
-        bool,
+fn get_common_type(pass: &DefinitionPass, span: &SpanPosition, type_a: Type, type_b: Type) -> Type {
+    if can_cast_to(pass, &type_a, &type_b) {
+        return type_b
     }
+
+    if can_cast_to(pass, &type_b, &type_a) {
+        return type_a
+    }
+
+    error(pass, &format!("no common type between {:?} and {:?} is found", type_a, type_b), span)
+}
+
+fn can_cast_to(pass: &DefinitionPass, type_a: &Type, type_b: &Type) -> bool {
+    if type_a == type_b {
+        return true;
+    }
+
+    if type_b.is_value() {
+        match type_a {
+            Type::Struct(_)
+            | Type::Callable(_, _)
+            | Type::Int
+            | Type::UInt
+            | Type::Float
+            | Type::Char
+            | Type::Byte
+            | Type::Str
+            | Type::Bool
+            | Type::Void => return true,
+            _ => ()
+        }
+
+        if type_a.is_unit() {
+            return true
+        }
+    }
+
+    if type_a.is_never() {
+        return true;
+    }
+
+    false
+}
+
+fn cast(pass: &DefinitionPass, span: &SpanPosition, expr: TypedValueExpr, ty: Type) -> TypedValueExpr {
+    let place = expr.place;
+
+    if expr.type_ == ty {
+        return expr;
+    }
+
+    if ty.is_value() {
+        match expr.type_ {
+            Type::Struct(_)
+            | Type::Callable(_, _)
+            | Type::Int
+            | Type::UInt
+            | Type::Float
+            | Type::Char
+            | Type::Byte
+            | Type::Str
+            | Type::Bool
+            | Type::Void => return expr,
+            _ => ()
+        }
+
+        if expr.type_.is_unit() {
+            return TypedValueExprKind::LitVoid.expr(*span, ty, place)
+        }
+    }
+
+    if expr.type_.is_never() {
+        return TypedValueExprKind::NoOpCast(Box::new(expr)).expr(*span, ty, place);
+    }
+
+    error(pass, &format!("could not cast {:?} to {:?}", expr.type_, ty), span);
 }
 
 fn find_or_yield(pass: &DefinitionPass, path: Path, name: String) -> SemanticValue {
@@ -276,306 +374,612 @@ fn borrow_ctx<'a>(pass: &'a DefinitionPass) -> RefMut<'a, SemanticContext> {
     pass.ctx.borrow_mut()
 }
 
-fn get_common_type(
+// fn get_common_type(
+//     pass: &DefinitionPass,
+//     span: &SpanPosition,
+//     type_a: &Type,
+//     type_b: &Type,
+// ) -> Type {
+//     if type_a != type_b {
+//         return type_a.clone();
+//     }
+//
+//     if is_subtype_of(pass, type_b, type_a) {
+//         return type_a.clone();
+//     }
+//
+//     if is_subtype_of(pass, type_a, type_b) {
+//         return type_b.clone();
+//     }
+//
+//     match (type_a, type_b) {
+//         (Type::Never, _) => type_b.clone(),
+//         (_, Type::Never) => type_a.clone(),
+//         _ => error(pass, "incompatible types", span),
+//     }
+// }
+
+// fn is_same_type(pass: &DefinitionPass, type_a: &Type, type_b: &Type) -> bool {
+//     match (type_a, type_b) {
+//         (Type::Never, Type::Never) => true,
+//         (Type::Callable(a, b), Type::Callable(c, d)) => {
+//             if a.len() != c.len() {
+//                 return false;
+//             }
+//
+//             for i in 0..a.len() {
+//                 if !is_same_type(pass, &a[i], &c[i]) {
+//                     return false;
+//                 }
+//             }
+//
+//             is_same_type(pass, b, d)
+//         },
+//         (Type::Struct(struct_a), Type::Struct(struct_b)) => struct_a == struct_b,
+//         (Type::Tuple(contents_a), Type::Tuple(contents_b)) => {
+//             if contents_a.len() != contents_b.len() {
+//                 false
+//             } else {
+//                 for i in 0..contents_a.len() {
+//                     if !is_same_type(pass, &contents_a[i], &contents_b[i]) {
+//                         return false
+//                     }
+//                 }
+//                 true
+//             }
+//         }
+//         _ => false,
+//     }
+// }
+
+// todo: warning, this is here
+// fn can_cast_to(pass: &DefinitionPass, subtype: &Type, super_type: &Type) -> bool {
+//     (subtype != super_type) || is_subtype_of(pass, subtype, super_type)
+// }
+
+// todo: warning, this is here
+// fn is_subtype_of(pass: &DefinitionPass, subtype: &Type, super_type: &Type) -> bool {
+//     match (subtype, super_type) {
+//         (Type::Never, _) => true,
+//         _ => false,
+//     }
+// }
+
+// fn unit(pass: &DefinitionPass, span: SpanPosition) -> SemanticValue {
+//     SemanticValue::Expr(
+//         TypedExprKind::LitUnit.expr(span, unit_type(pass)),
+//         Type::Never
+//     )
+// }
+
+// fn unit_type(pass: &DefinitionPass) -> Type {
+//     Type::StructObject(borrow_ctx(pass).standard.void.clone())
+// }
+
+// fn visit_expr_expect_expr(
+//     pass: &DefinitionPass,
+//     path: Path,
+//     scope_expr_idx: &mut usize,
+//     local_var_idx: &mut Offset,
+//     expr: &ValueExpr,
+// ) -> (TypedExpr, Type) {
+//     let place = *local_var_idx;
+//     let span = &expr.span;
+//     let expr = visit_value_expr(pass, path, scope_expr_idx, local_var_idx, expr);
+//     match expr {
+//         SemanticValue::Expr(expr, return_type, ..) => (expr, return_type),
+//         SemanticValue::Function { param_types, return_type, function_idx } => {
+//             *local_var_idx += 1;
+//             (TypedExprKind::GetFunction(function_idx)
+//                  .expr(
+//                      span.clone(),
+//                      Type::Callable(param_types, Box::new(return_type)),
+//                      place
+//                  ), Type::Never)
+//         },
+//         SemanticValue::LocalVariable(type_, idx) => {
+//             *local_var_idx += type_.get_size();
+//             (TypedExprKind::LocalAccess(idx)
+//                  .expr(
+//                      span.clone(),
+//                      type_,
+//                      place
+//                  ), Type::Never)
+//         }
+//         SemanticValue::ConstVariable(type_, idx) => {
+//             *local_var_idx += type_.get_size();
+//             (TypedExprKind::ConstVariable(idx)
+//                  .expr(
+//                      span.clone(),
+//                      type_,
+//                      place
+//                  ), Type::Never)
+//         }
+//         _ => error(pass, "expected expression", span),
+//     }
+// }
+
+fn visit_type_expr(
     pass: &DefinitionPass,
-    span: &SpanPosition,
-    type_a: &Type,
-    type_b: &Type,
+    path: Path,
+    expr: &TypeExpr
 ) -> Type {
-    match (type_a, type_b) {
-        (Type::Never, _) => type_b.clone(),
-        (_, Type::Never) => type_a.clone(),
-        (Type::StructObject(struct_a), Type::StructObject(struct_b)) => {
-            if struct_a == struct_b {
-                type_a.clone()
-            } else {
-                error(pass, "incompatible types", span)
+    let span = expr.span.clone();
+
+    match &expr.kind {
+        TypeExprKind::Variable(name) => {
+            let value = find_or_yield(pass, path, name.clone());
+
+            match value {
+                SemanticValue::Type(ty) => ty.clone(),
+                _ => error(pass, "expected type", &span),
             }
         }
-        _ => error(pass, "incompatible types", span),
-    }
-}
+        TypeExprKind::Tuple(exprs) => {
+            let mut types = vec![];
 
-fn is_same_type(pass: &DefinitionPass, type_a: &Type, type_b: &Type) -> bool {
-    match (type_a, type_b) {
-        (Type::Never, Type::Never) => true,
-        (Type::StructObject(struct_a), Type::StructObject(struct_b)) => struct_a == struct_b,
-        (Type::Tuple(contents_a), Type::Tuple(contents_b)) => {
-            if contents_a.len() != contents_b.len() {
-                false
-            } else {
-                for i in 0..contents_a.len() {
-                    if !is_same_type(pass, &contents_a[i], &contents_b[i]) {
-                        return false
-                    }
-                }
-                true
+            for expr in exprs {
+                types.push(visit_type_expr(pass, path.clone(), expr));
             }
+
+            Type::Tuple(types)
         }
-        _ => false,
     }
 }
 
-fn can_cast_to(pass: &DefinitionPass, subtype: &Type, super_type: &Type) -> bool {
-    is_same_type(pass, subtype, super_type) || is_subtype_of(pass, subtype, super_type)
-}
-
-fn is_subtype_of(pass: &DefinitionPass, subtype: &Type, super_type: &Type) -> bool {
-    match (super_type, subtype) {
-        (_, Type::Never) => true,
-        _ => false,
-    }
-}
-
-fn unit(pass: &DefinitionPass, span: SpanPosition) -> SemanticValue {
-    SemanticValue::Expr(
-        TypedExprKind::LitUnit.expr(span, unit_type(pass)),
-        Type::Never,
-    )
-}
-
-fn unit_type(pass: &DefinitionPass) -> Type {
-    Type::StructObject(borrow_ctx(pass).standard.void.clone())
-}
-
-fn visit_expr_expect_expr(
+fn visit_value_expr(
     pass: &DefinitionPass,
     path: Path,
+    return_type: Option<&Type>,
     scope_expr_idx: &mut usize,
-    local_var_idx: &mut usize,
-    expr: &Expr,
-) -> (TypedExpr, Type) {
-    let span = &expr.span;
-    let expr = visit_expr(pass, path, scope_expr_idx, local_var_idx, expr);
-    match expr {
-        SemanticValue::Expr(expr, return_type) => (expr, return_type),
-        _ => error(pass, "expected expression", span),
-    }
-}
-
-fn visit_expr_expect_type(
-    pass: &DefinitionPass,
-    path: Path,
-    expr: &Expr
-) -> Type {
-    let span = &expr.span;
-    let expr = visit_expr(pass, path.subpath("$typecheck".to_string()), &mut 0, &mut 0, expr);
-    match expr {
-        SemanticValue::Struct(struct_ref) => Type::StructObject(struct_ref),
-        _ => error(pass, "expected type", span),
-    }
-}
-
-fn visit_expr(
-    pass: &DefinitionPass,
-    path: Path,
-    scope_expr_idx: &mut usize,
-    local_var_idx: &mut usize,
-    expr: &Expr
-) -> SemanticValue {
+    local_var_idx: &mut Offset,
+    expr: &ValueExpr
+) -> TypedValueExpr {
+    let place = *local_var_idx;
     *scope_expr_idx += 1;
 
     let span = expr.span.clone();
     match &expr.kind {
-        ExprKind::Variable(name) => {
+        ValueExprKind::Variable(name) => {
             let value = find_or_yield(pass, path, name.clone());
 
             match value {
+                // SemanticValue::Expr(expr, return_type, ..) => (expr, return_type),
+                SemanticValue::Function { param_types, return_type, function_idx } => {
+                    *local_var_idx += 1;
+                    TypedValueExprKind::GetFunction(function_idx)
+                         .expr(
+                             span.clone(),
+                             Type::Callable(param_types, Box::new(return_type)),
+                             place
+                         )
+                },
                 SemanticValue::LocalVariable(type_, idx) => {
-                    SemanticValue::Expr(TypedExprKind::LocalVariable(idx).expr(span, type_), Type::Never)
+                    *local_var_idx += type_.get_size();
+                    TypedValueExprKind::LocalAccess(idx)
+                         .expr(
+                             span.clone(),
+                             type_,
+                             place
+                         )
                 }
                 SemanticValue::ConstVariable(type_, idx) => {
-                    SemanticValue::Expr(TypedExprKind::ConstVariable(idx).expr(span, type_), Type::Never)
+                    *local_var_idx += type_.get_size();
+                    TypedValueExprKind::ConstVariable(idx)
+                         .expr(
+                             span.clone(),
+                             type_,
+                             place
+                         )
                 }
-                value => value
+                _ => error(pass, "expected value", &span),
             }
         }
-        ExprKind::IntegerAccess(left, index) => {
-            let (left, return_type) = visit_expr_expect_expr(pass, path.clone(), scope_expr_idx, local_var_idx, left);
-
-            if let Type::Tuple(types) = &left.type_ {
-                let Some(indexed_type) = types.get(*index) else {
-                    error(pass, "index out of bounds on tuple", &span);
-                };
-
-                let indexed_type = indexed_type.clone();
-
-                SemanticValue::Expr(
-                    TypedExprKind::IntegerAccess(
-                        Box::new(left),
-                        *index
-                    ).expr(span, indexed_type),
-                    return_type
-                )
-            } else {
-                error(pass, "cannot index a non-tuple", &span)
-            }
-        }
-        ExprKind::Tuple(exprs) => {
+        ValueExprKind::Tuple(exprs) => {
             let mut typed_exprs = vec![];
-            let mut return_type = Type::Never;
 
             for expr in exprs {
-                let (typed_expr, sub_return_type) = visit_expr_expect_expr(pass, path.clone(), scope_expr_idx, local_var_idx, expr);
+                let typed_expr = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, local_var_idx, expr);
                 typed_exprs.push(typed_expr);
-                return_type = get_common_type(pass, &span, &return_type, &sub_return_type);
             }
 
             let type_ = Type::Tuple(typed_exprs.iter().map(|a| a.type_.clone()).collect());
+            let size = type_.get_size();
 
-            SemanticValue::Expr(TypedExprKind::Tuple(typed_exprs).expr(span, type_), return_type)
-        }
-        ExprKind::LitInt(i) => SemanticValue::Expr(
-            TypedExprKind::LitInt(*i)
-                .expr(span, Type::StructObject(borrow_ctx(pass).standard.int.clone())),
-            Type::Never,
-        ),
-        ExprKind::LitUInt(i) => SemanticValue::Expr(
-            TypedExprKind::LitUInt(*i)
-                .expr(span, Type::StructObject(borrow_ctx(pass).standard.uint.clone())),
-            Type::Never,
-        ),
-        ExprKind::LitFloat(i) => SemanticValue::Expr(
-            TypedExprKind::LitFloat(*i)
-                .expr(span, Type::StructObject(borrow_ctx(pass).standard.float.clone())),
-            Type::Never,
-        ),
-        ExprKind::LitByte(i) => SemanticValue::Expr(
-            TypedExprKind::LitByte(*i)
-                .expr(span, Type::StructObject(borrow_ctx(pass).standard.byte.clone())),
-            Type::Never,
-        ),
-        ExprKind::LitChar(i) => SemanticValue::Expr(
-            TypedExprKind::LitChar(*i)
-                .expr(span, Type::StructObject(borrow_ctx(pass).standard.char.clone())),
-            Type::Never,
-        ),
-        ExprKind::LitBool(i) => SemanticValue::Expr(
-            TypedExprKind::LitBool(*i)
-                .expr(span, Type::StructObject(borrow_ctx(pass).standard.bool.clone())),
-            Type::Never,
-        ),
-        ExprKind::LitUnit => unit(pass, span),
-        ExprKind::LitStr(s) => {
-            // let mut ctx = borrow_ctx(pass);
-            // let value = ctx.new_object(Object::String(s.clone()));
-            SemanticValue::Expr(
-                TypedExprKind::LitStr(s.clone())
-                    .expr(span, Type::StructObject(borrow_ctx(pass).standard.str.clone())),
-                Type::Never,
-            )
-        }
-        ExprKind::Return(value) => {
-            let (value, return_type) = visit_expr_expect_expr(pass, path, scope_expr_idx, local_var_idx, value);
+            *local_var_idx += size;
 
-            let common_type = get_common_type(pass, &value.span, &value.type_, &return_type);
-
-            SemanticValue::Expr(
-                TypedExprKind::Return(Box::new(value)).expr(span, Type::Never),
-                common_type,
-            )
+            TypedValueExprKind::Tuple(typed_exprs)
+                .expr(span, type_, place)
         }
-        ExprKind::AssignVariable(left, name, right) => {
+        ValueExprKind::LitInt(i) => {
+            *local_var_idx += 1;
+            TypedValueExprKind::LitInt(*i)
+                .expr(span, Type::Int, place)
+        }
+        ValueExprKind::LitUInt(i) => {
+            *local_var_idx += 1;
+            TypedValueExprKind::LitUInt(*i)
+                .expr(span, Type::UInt, place)
+        }
+        ValueExprKind::LitFloat(i) => {
+            *local_var_idx += 1;
+            TypedValueExprKind::LitFloat(*i)
+                .expr(span, Type::Float, place)
+        }
+        ValueExprKind::LitByte(i) => {
+            *local_var_idx += 1;
+            TypedValueExprKind::LitByte(*i)
+                .expr(span, Type::Byte, place)
+        }
+        ValueExprKind::LitChar(i) => {
+            *local_var_idx += 1;
+            TypedValueExprKind::LitChar(*i)
+                .expr(span, Type::Char, place)
+        }
+        ValueExprKind::LitBool(i) => {
+            *local_var_idx += 1;
+            TypedValueExprKind::LitBool(*i)
+                .expr(span, Type::Bool, place)
+        }
+        ValueExprKind::LitStr(s) => {
+            *local_var_idx += 1;
+            TypedValueExprKind::LitStr(s.clone())
+                .expr(span, Type::Str, place)
+        }
+        ValueExprKind::Return(value) => {
+            let Some(return_type) = return_type else {
+                error(pass, "cannot return in this context", &span);
+            };
+
+            if let Some(value) = value {
+                let value = visit_value_expr(pass, path, Some(return_type), scope_expr_idx, local_var_idx, value);
+                TypedValueExprKind::Return(
+                    Some(Box::new(cast(
+                        pass,
+                        &span,
+                        value,
+                        return_type.clone()
+                    )))
+                ).expr(span, Type::Never, place)
+            } else {
+                if !return_type.is_unit() {
+                    error(pass, "please specify return value", &span);
+                }
+
+                TypedValueExprKind::Return(None).expr(span, Type::Never, place)
+            }
+        }
+        ValueExprKind::AssignVariable(name, ty, right) => {
             let var_path = path.subpath(name.clone());
 
-            let (right, return_type) = visit_expr_expect_expr(
+            let right = visit_value_expr(
                 pass,
                 path.clone(),
+                return_type,
                 scope_expr_idx,
                 local_var_idx,
                 right
             );
 
-            if let Some(left) = &left {
-                let left_type = visit_expr_expect_type(pass, path, left);
-
-                if !can_cast_to(pass, &right.type_, &left_type) {
-                    error(pass, "type mismatch", &span);
-                }
-
-                let idx = *local_var_idx;
-                *local_var_idx += left_type.get_size();
+            if let Some(ty) = &ty {
+                let ty = visit_type_expr(pass, path, ty);
 
                 set(
                     pass,
                     var_path,
-                    SemanticValue::LocalVariable(left_type.clone(), idx),
+                    SemanticValue::LocalVariable(ty.clone(), right.place),
                 );
 
-                SemanticValue::Expr(
-                    TypedExprKind::AssignVariable(Box::new(right)).expr(span, left_type),
-                    return_type,
-                )
+                cast(pass, &span, right, ty)
             } else {
-                let idx = *local_var_idx;
-                *local_var_idx += right.type_.get_size();
-
                 set(
                     pass,
                     var_path,
-                    SemanticValue::LocalVariable(right.type_.clone(), idx),
+                    SemanticValue::LocalVariable(right.type_.clone(), right.place),
                 );
-                SemanticValue::Expr(
-                    TypedExprKind::AssignVariable(Box::new(right.clone()))
-                        .expr(span, right.type_),
-                    return_type,
-                )
+
+                right
             }
         }
-        ExprKind::Block(exprs, tail) => {
-            let branch_path = path.subpath(format!("$branch{}", scope_expr_idx));
-            let mut func_return_type = Type::Never;
+        ValueExprKind::Block(exprs, tail) => {
+            let branch_path = path.subpath(format!("$scope{}", scope_expr_idx));
             let mut statements = vec![];
             let mut scope_expr_idx = 0;
-            let mut local_var_idx = *local_var_idx;
+            let mut block_var_idx = local_var_idx.clone();
 
             for expr in exprs {
-                let (expr, statement_return_type) = visit_expr_expect_expr(
+                let expr = visit_value_expr(
                     pass,
                     branch_path.clone(),
+                    return_type,
                     &mut scope_expr_idx,
-                    &mut local_var_idx,
+                    &mut block_var_idx,
                     expr,
                 );
-                func_return_type =
-                    get_common_type(pass, &expr.span, &func_return_type, &statement_return_type);
 
                 if expr.type_.is_never() {
                     statements.push(expr);
-                    return SemanticValue::Expr(
-                        TypedExprKind::Block(statements, None).expr(span, Type::Never),
-                        func_return_type,
-                    );
+                    return TypedValueExprKind::Block(statements, None).expr(span, Type::Never, place);
                 } else {
                     statements.push(expr);
                 };
             }
 
             if let Some(tail) = tail {
-                let (tail, statement_return_type) = visit_expr_expect_expr(
+                let tail = visit_value_expr(
                     pass,
                     path,
+                    return_type,
                     &mut scope_expr_idx,
-                    &mut local_var_idx,
+                    &mut block_var_idx,
                     tail,
                 );
-                let func_return_type =
-                    get_common_type(pass, &tail.span, &func_return_type, &statement_return_type);
 
                 let tail_type = tail.type_.clone();
 
-                SemanticValue::Expr(
-                    TypedExprKind::Block(statements, Some(Box::new(tail))).expr(span, tail_type),
-                    func_return_type,
-                )
+                *local_var_idx += tail_type.get_size();
+
+                TypedValueExprKind::Block(statements, Some(Box::new(tail))).expr(span, tail_type, place)
             } else {
-                SemanticValue::Expr(
-                    TypedExprKind::Block(statements, None).expr(span, unit_type(pass)),
-                    func_return_type,
-                )
+                TypedValueExprKind::Block(statements, None).expr(span, Type::unit(), place)
             }
         }
-        _ => todo!(),
+        ValueExprKind::ReassignVariable(left, right) => {
+            todo!()
+            // let (left, left_return_value) = visit_expr_expect_expr(pass, path.clone(), scope_expr_idx, local_var_idx, left);
+            // let (right, right_return_value) = visit_expr_expect_expr(pass, path.clone(), scope_expr_idx, local_var_idx, right);
+            //
+            // let return_type = get_common_type(pass, &span, &left_return_value, &right_return_value);
+            //
+            // if is_same_type(pass, &left.type_, &right.type_) {
+            //     error(pass, "expected lhs and rhs to be same type", &span)
+            // }
+            //
+            // match left.kind {
+            //     //
+            //     // // SemanticValue::LocalVariable(type_, idx) => {
+            //     // //     SemanticValue::Expr(
+            //     // //         TypedExprKind::ReassignVariable(idx, Box::new(right))
+            //     // //             .expr(span, type_),
+            //     // //         return_value
+            //     // //     )
+            //     // // }
+            //     // // _ => todo!()
+            //     // TypedExprKind::TupleAccess(left, indexed_offset) => {
+            //     //     match left.kind {
+            //     //
+            //     //         TypedExprKind::LocalAccess(offset) => {
+            //     //
+            //     //         }
+            //     //     }
+            //     //
+            //     //     SemanticValue::Expr(
+            //     //         TypedExprKind::ReassignVariable(idx, Box::new(right))
+            //     //             .expr(span, Type::Never),
+            //     //         return_type
+            //     //     )
+            //     // }
+            //     // // TypedExprKind::ObjectAccess(_, _) => {
+            //     // //
+            //     // // }
+            //     // TypedExprKind::LocalAccess(offset) => {
+            //     //     SemanticValue::Expr(
+            //     //         TypedExprKind::ReassignVariable(offset, Box::new(right))
+            //     //             .expr(span, Type::Never),
+            //     //         return_type
+            //     //     )
+            //     // }
+            //
+            //     TypedExprKind::LocalAccess(offset) => {
+            //         SemanticValue::Expr(
+            //             TypedExprKind::LocalAccess(offset+indexed_offset)
+            //                 .expr(span, indexed_type),
+            //             return_type
+            //         )
+            //     }
+            //     TypedExprKind::ObjectAccess(expr, offset) => {
+            //         SemanticValue::Expr(
+            //             TypedExprKind::ObjectAccess(expr, offset+indexed_offset)
+            //                 .expr(span, indexed_type),
+            //             return_type
+            //         )
+            //     }
+            //
+            //     _ => error(pass, "invalid left hand side", &span)
+            // }
+        }
+        ValueExprKind::IntegerAccess(left, index) => {
+            let left = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, &mut local_var_idx.clone(), left);
+
+            let Some((indexed_type, indexed_offset)) = left.type_.get_with_index(*index) else {
+                error(pass, "expected tuple", &span)
+            };
+
+            *local_var_idx += indexed_type.get_size();
+            match left.kind {
+                TypedValueExprKind::LocalAccess(offset) =>
+                    TypedValueExprKind::LocalAccess(offset + indexed_offset).expr(span, indexed_type, place),
+                _ =>
+                    TypedValueExprKind::TupleAccess(Box::new(left), indexed_offset).expr(span, indexed_type, place)
+            }
+        }
+        ValueExprKind::IdentifierAccess(left, ident) => {
+            let left = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, local_var_idx, left);
+
+            if let Type::Struct(struct_ref) = &left.type_ {
+                let fields = find_or_yield(pass, struct_ref.clone(), "$fields".to_string());
+                let SemanticValue::StructFields(fields) = fields else {
+                    error(pass, "expected struct to have fields", &span);
+                };
+
+                let Some((indexed_offset, indexed_type)) = fields.get(ident) else {
+                    error(pass, &format!("object does not have field `{}`", ident), &span)
+                };
+
+                let indexed_type = indexed_type.clone();
+
+                TypedValueExprKind::ObjectAccess(
+                    Box::new(left),
+                    *indexed_offset
+                ).expr(span, indexed_type, place)
+            } else {
+                error(pass, "cannot index a non-struct", &span)
+            }
+        }
+        ValueExprKind::Call(left, params) => {
+            let mut call_var_idx = *local_var_idx;
+
+            let left = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, &mut call_var_idx, left);
+            let Type::Callable(param_types, function_return_type) = left.type_.clone() else {
+                error(pass, "expected callable", &span)
+            };
+
+            if param_types.len() != params.len() {
+                error(pass, &format!("expected {} parameters, found {}", param_types.len(), params.len()), &span);
+            }
+
+            let mut passed_typed_params = vec![];
+            for i in 0..params.len() {
+                let param = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, &mut call_var_idx, &params[i]);
+                let ty = param_types[i].clone();
+                passed_typed_params.push(cast(pass, &param.span.clone(), param, ty));
+            }
+
+            *local_var_idx += function_return_type.get_size();
+
+            TypedValueExprKind::Invoke(
+                Box::new(left),
+                passed_typed_params
+            ).expr(span, *function_return_type, place)
+        }
+        ValueExprKind::BinOp(binop_kind, left, right) => {
+            let mut param_var_idx = local_var_idx.clone();
+            let left = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, &mut param_var_idx, left);
+            let right = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, &mut param_var_idx, right);
+
+            // | BinOpKind::Eq | BinOpKind::Ne | BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge,
+
+            let result_type = match (&binop_kind, &left.type_, &right.type_) {
+                (
+                    BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div,
+                    Type::Int, Type::Int
+                ) => Type::Int,
+                (
+                    BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div,
+                    Type::UInt, Type::UInt
+                ) => Type::UInt,
+                (
+                    BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div,
+
+                    Type::Float, Type::Float
+                ) => Type::Float,
+                (
+                    BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div,
+                    Type::Byte, Type::Byte
+                ) => Type::Byte,
+                (
+                    BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge,
+                    Type::Int, Type::Int
+                ) => Type::Bool,
+                (
+                    BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge,
+                    Type::UInt, Type::UInt
+                ) => Type::Bool,
+                (
+                    BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge,
+                    Type::Float, Type::Float
+                ) => Type::Bool,
+                (
+                    BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge,
+                    Type::Byte, Type::Byte
+                ) => Type::Bool,
+                (
+                    BinOpKind::Eq | BinOpKind::Ne,
+                    a, b
+                ) if a == b => Type::Bool,
+                (a, b, c) => error(pass, &format!("cannot perform binary operation `{:?}` on {:?} and {:?}", a, b, c), &span)
+            };
+
+            *local_var_idx += result_type.get_size();
+            TypedValueExprKind::BinOp(
+                binop_kind.clone(),
+                Box::new(left),
+                Box::new(right),
+            ).expr(span, result_type, place)
+        }
+        ValueExprKind::UnOp(unop_kind, value) => {
+            let value = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, &mut local_var_idx.clone(), value);
+
+            let result_type = match (&unop_kind, &value.type_) {
+                (
+                    UnOpKind::Pos | UnOpKind::Neg | UnOpKind::Not,
+                    Type::Float
+                ) => Type::Float,
+                (
+                    UnOpKind::Pos | UnOpKind::Neg | UnOpKind::Not,
+                    Type::Int
+                ) => Type::Float,
+                (
+                    UnOpKind::Pos | UnOpKind::Not,
+                    Type::UInt
+                ) => Type::UInt,
+                (
+                    UnOpKind::Pos | UnOpKind::Not,
+                    Type::Byte
+                ) => Type::Byte,
+                (
+                    UnOpKind::Not,
+                    Type::Bool
+                ) => Type::Bool,
+                (a, b) => error(pass, &format!("cannot perform unary operation `{:?}` on {:?}", a, b), &span)
+            };
+
+            *local_var_idx += result_type.get_size();
+            TypedValueExprKind::UnOp(
+                unop_kind.clone(),
+                Box::new(value),
+            ).expr(span, result_type, place)
+        }
+        ValueExprKind::If(cond, main_branch, else_branch) => {
+            let cond = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, &mut local_var_idx.clone(), cond);
+
+            if cond.type_ != Type::Bool {
+                error(pass, &format!("condition must be boolean, not {:?}", cond.type_), &span)
+            }
+
+            let branch_path = path.subpath(format!("$branch{}", scope_expr_idx));
+            let main_branch = visit_value_expr(pass, branch_path, return_type, scope_expr_idx, &mut local_var_idx.clone(), main_branch);
+
+            let span = cond.span.span(&main_branch.span);
+
+            if let Some(else_branch) = else_branch {
+                let branch_path = path.subpath(format!("$branch{}", scope_expr_idx));
+                let else_branch = visit_value_expr(pass, branch_path, return_type, scope_expr_idx, &mut local_var_idx.clone(), else_branch);
+
+                let span = cond.span.span(&else_branch.span);
+
+                let common_type = get_common_type(pass, &span, main_branch.type_.clone(), else_branch.type_.clone());
+
+                TypedValueExprKind::If(
+                    Box::new(cond),
+                    Box::new(cast(pass, &main_branch.span.clone(), main_branch, common_type.clone())),
+                    Some(Box::new(cast(pass, &else_branch.span.clone(), else_branch, common_type.clone())))
+                ).expr(span, common_type, place)
+            } else {
+                if !main_branch.type_.is_unit() && !main_branch.type_.is_never() {
+                    error(pass, "if statement without else branch must evaluate to unit or never", &span)
+                }
+
+                TypedValueExprKind::If(Box::new(cond), Box::new(main_branch), None)
+                    .expr(span, Type::unit(), place)
+            }
+        }
+        ValueExprKind::Cast(value, ty) => {
+            let left = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, local_var_idx, value);
+            let ty = visit_type_expr(pass, path.clone(), ty);
+
+            cast(pass, &span, left, ty)
+        }
     }
 }
 
@@ -593,68 +997,62 @@ fn definition(pass: &DefinitionPass, path: Path) -> Result<(), CompilerError> {
     let span = &pass.def.span;
 
     match &pass.def.kind {
-        DefinitionKind::ConstStatement {
-            binding,
+        StatementKind::ConstStatement {
+            name,
+            const_type,
             value: right,
         } => {
-            let var_path = path.subpath(binding.name.clone());
+            let var_path = path.subpath(name.clone());
 
-            let (right, return_type) = visit_expr_expect_expr(
+            let right = visit_value_expr(
                 pass,
                 path.clone(),
+                None,
                 &mut 0,
                 &mut 0,
                 right
             );
 
-            if let Some(left) = &binding.type_ {
-                let left_type = visit_expr_expect_type(
-                    pass,
-                    path,
-                    left
-                );
+            let left_type = visit_type_expr(
+                pass,
+                path,
+                const_type
+            );
 
-                if !can_cast_to(pass, &right.type_, &left_type) {
-                    error(pass, "type mismatch", span);
-                }
-
-                let right_type = right.type_.clone();
-
-                let definition_idx = {
-                    let mut ctx = borrow_ctx(pass);
-                    let definition_idx = ctx.resulting_ast.constants.len();
-
-                    ctx.resulting_ast.constants.push(right);
-                    definition_idx
-                };
-
-                set(pass, var_path, SemanticValue::ConstVariable(right_type, definition_idx))
-            } else {
-                set(pass, var_path, SemanticValue::Expr(right, return_type))
+            if right.type_ != left_type {
+                error(pass, "type mismatch", span);
             }
+
+            let right_type = right.type_.clone();
+
+            let definition_idx = {
+                let mut ctx = borrow_ctx(pass);
+                let definition_idx = ctx.resulting_ast.constants.len();
+
+                ctx.resulting_ast.constants.push(right);
+                definition_idx
+            };
+
+            set(pass, var_path, SemanticValue::ConstVariable(right_type, definition_idx))
         }
-        DefinitionKind::StructStatement { name, fields, .. } => {
+        StatementKind::StructStatement { name, fields, .. } => {
             let struct_path = path.subpath(name.clone());
             set(
                 pass,
                 struct_path.clone(),
-                SemanticValue::Struct(struct_path.clone()),
+                SemanticValue::Type(Type::Struct(struct_path.clone())),
             );
 
             let mut fields_processed = HashMap::new();
 
-            for (i, Binding { type_, name, .. }) in fields.iter().enumerate() {
-                if let Some(type_) = type_ {
-                    let left = visit_expr_expect_type(
-                        pass,
-                        path.clone(),
-                        type_
-                    );
+            for (i, (field_name, field_type)) in fields.iter().enumerate() {
+                let left = visit_type_expr(
+                    pass,
+                    path.clone(),
+                    field_type
+                );
 
-                    fields_processed.insert(name.clone(), (i, left));
-                } else {
-                    error(pass, "auto types invalid here", span);
-                }
+                fields_processed.insert(field_name.clone(), (i as Offset, left));
             }
 
             set(
@@ -663,62 +1061,68 @@ fn definition(pass: &DefinitionPass, path: Path) -> Result<(), CompilerError> {
                 SemanticValue::StructFields(fields_processed),
             );
         }
-        DefinitionKind::FunctionStatement {
-            binding,
+        StatementKind::FunctionStatement {
+            name,
+            return_type,
             param_bindings,
             statement,
+            export: exposed,
         } => {
-            let func_path = path.subpath(binding.name.clone());
+            let func_path = path.subpath(name.clone());
 
-            let expected_return_type = if let Some(expr) = &binding.type_ {
-                visit_expr_expect_type(pass, path.clone(), expr)
+            let return_type = if let Some(expr) = &return_type {
+                visit_type_expr(pass, path.clone(), expr)
             } else {
-                error(pass, "auto not allowed in function declaration", span)
+                Type::unit()
             };
 
-            let definition_idx = borrow_ctx(pass).resulting_ast.functions.len();
+            let function_idx = borrow_ctx(pass).resulting_ast.functions.len();
 
-            set(pass, func_path.clone(), SemanticValue::Function(expected_return_type.clone(), definition_idx));
+            let mut local_var_idx: Offset = 0;
 
-            let mut local_var_idx = 0usize;
-
-            let mut bindings = vec![];
-            for binding in param_bindings {
-                let Some(type_) = &binding.type_ else {
-                    error(pass, "auto not allowed in function declaration", span);
-                };
-
-                let param_type = visit_expr_expect_type(
+            let mut param_types = vec![];
+            for (param_name, param_type) in param_bindings {
+                let param_type = visit_type_expr(
                     pass,
                     path.clone(),
-                    type_
+                    param_type
                 );
-                let param_path = func_path.subpath(binding.name.clone());
+                let param_path = func_path.subpath(param_name.clone());
 
                 let param_idx = local_var_idx;
                 local_var_idx += param_type.get_size();
 
-                set(pass, param_path.clone(), SemanticValue::LocalVariable(param_type, param_idx));
-                bindings.push(param_path);
+                set(pass, param_path.clone(), SemanticValue::LocalVariable(param_type.clone(), param_idx));
+                param_types.push(param_type);
             }
 
-            if let Some(statement) = statement {
-                let (statement, return_type) =
-                    visit_expr_expect_expr(pass, func_path, &mut 0, &mut local_var_idx, statement);
-                let return_type = get_common_type(pass, span, &return_type, &statement.type_);
+            set(pass, func_path.clone(), SemanticValue::Function {
+                param_types,
+                return_type: return_type.clone(),
+                function_idx
+            });
 
-                if !can_cast_to(pass, &return_type, &expected_return_type) {
-                    error(
+            if let Some(statement) = statement {
+                let statement =
+                    visit_value_expr(
                         pass,
-                        "expected return type does not match actual return type",
-                        span,
+                        func_path.clone(),
+                        Some(&return_type),
+                        &mut 0,
+                        &mut local_var_idx,
+                        statement
                     );
-                } else {
-                    borrow_ctx(pass).resulting_ast.functions.push(statement)
-                }
+
+
+                borrow_ctx(pass).resulting_ast.functions.push(TypedFunction {
+                    export_name: exposed.then(|| func_path.to_string()),
+                    body: Some(statement)
+                })
             } else {
-                todo!("do something with abstract functions")
-                // function is valid, nothing happens
+                borrow_ctx(pass).resulting_ast.functions.push(TypedFunction {
+                    export_name: exposed.then(|| func_path.to_string()),
+                    body: None
+                })
             }
         }
         _ => todo!(),
@@ -743,44 +1147,51 @@ impl<T> CoroutineResultImpl<T> for CoroutineResult<T, T> {
 pub fn semantic_check(tree: AST) -> Result<TypedAST, Vec<CompilerError>> {
     let ctx = Rc::new(RefCell::new(SemanticContext {
         namespace: Namespace::new(),
-        statics: vec![],
         resulting_ast: TypedAST {
             constants: vec![],
             functions: vec![],
         },
-        standard: standard_types(),
         errors: vec![],
     }));
 
     {
         let mut ctx = ctx.borrow_mut();
-        let standard = ctx.standard.clone();
 
-        ctx.set(standard.int.clone(), SemanticValue::Struct(standard.int));
         ctx.set(
-            standard.uint.clone(),
-            SemanticValue::Struct(standard.uint),
+            Path::ROOT.subpath("int".to_string()),
+            SemanticValue::Type(Type::Int)
         );
         ctx.set(
-            standard.float.clone(),
-            SemanticValue::Struct(standard.float),
+            Path::ROOT.subpath("uint".to_string()),
+            SemanticValue::Type(Type::UInt)
         );
         ctx.set(
-            standard.char.clone(),
-            SemanticValue::Struct(standard.char),
+            Path::ROOT.subpath("float".to_string()),
+            SemanticValue::Type(Type::Float)
         );
         ctx.set(
-            standard.byte.clone(),
-            SemanticValue::Struct(standard.byte),
-        );
-        ctx.set(standard.str.clone(), SemanticValue::Struct(standard.str));
-        ctx.set(
-            standard.void.clone(),
-            SemanticValue::Struct(standard.void),
+            Path::ROOT.subpath("char".to_string()),
+            SemanticValue::Type(Type::Char)
         );
         ctx.set(
-            standard.bool.clone(),
-            SemanticValue::Struct(standard.bool),
+            Path::ROOT.subpath("byte".to_string()),
+            SemanticValue::Type(Type::Byte)
+        );
+        ctx.set(
+            Path::ROOT.subpath("str".to_string()),
+            SemanticValue::Type(Type::Str)
+        );
+        ctx.set(
+            Path::ROOT.subpath("bool".to_string()),
+            SemanticValue::Type(Type::Bool)
+        );
+        ctx.set(
+            Path::ROOT.subpath("value".to_string()),
+            SemanticValue::Type(Type::Value)
+        );
+        ctx.set(
+            Path::ROOT.subpath("void".to_string()),
+            SemanticValue::Type(Type::Tuple(vec![])),
         );
     }
 
@@ -794,7 +1205,7 @@ pub fn semantic_check(tree: AST) -> Result<TypedAST, Vec<CompilerError>> {
                 &DefinitionPass {
                     ctx: ctx_clone,
                     def,
-                    yielder: &yielder,
+                    yielder: &yielder
                 },
                 Path::ROOT.subpath("package".to_string())
             );
