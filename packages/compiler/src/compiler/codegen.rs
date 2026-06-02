@@ -1,25 +1,23 @@
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter, Write};
-use std::pin::Pin;
-use std::rc::Rc;
-use crate::common::fsize::fsize;
-use crate::common::value::{CallableObjectHeader, GCStage, ObjectHeader, StringObjectHeader, Value};
+use crate::common::value::{CallableObjectHeader, ObjectFlag, ObjectHeader, StringObjectHeader};
 use crate::compiler::error::CompilerError;
 use crate::compiler::parser::{BinOpKind, UnOpKind};
 use crate::compiler::position::SpanPosition;
-use crate::compiler::semantics::{Type, TypedAST, TypedValueExpr, TypedValueExprKind};
+use crate::compiler::semantics::{Type, TypedAST, TypedBinOpKind, TypedUnOpKind, TypedValueExpr, TypedValueExprKind};
 use crate::vm::callable::{PuffinFunction, PuffinProgram};
 
 #[derive(Copy, Clone)]
 pub enum Instruction {
-    LoadInt(isize),
-    LoadUInt(usize),
-    LoadVoid,
-    LoadFloat(fsize),
-    LoadByte(u8),
-    LoadChar(char),
-    LoadBool(bool),
+    // LoadInt(isize),
+    // LoadUInt(usize),
+    // LoadVoid,
+    // LoadFloat(fsize),
+    // LoadByte(u8),
+    // LoadChar(char),
+    // LoadBool(bool),
+    Load(u64),
     LoadString(usize), // ref -> static string
     LoadObject(usize), // ref -> static object
     LoadFunction(usize), // ref -> static function
@@ -35,30 +33,43 @@ pub enum Instruction {
     Test,
     Jump(usize),
 
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Neg,
+    AddI,
+    AddF,
+
+    SubI,
+    SubF,
+
+    MulI,
+    MulF,
+
+    DivI,
+    DivU,
+    DivF,
+
+    NegI,
+    NegF,
     Not,
 
     Eq(u32), // operand size
     Ne(u32), // operand size
-    Lt,
-    Le,
-    Gt,
-    Ge,
+    LtI,
+    LtU,
+    LtF,
+    LeI,
+    LeU,
+    LeF,
+    GtI,
+    GtU,
+    GtF,
+    GeI,
+    GeU,
+    GeF,
 }
 
 impl Debug for Instruction {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Instruction::LoadInt(a) =>                      f.write_fmt(format_args!("loadint {}", a)),
-            Instruction::LoadUInt(a) =>                     f.write_fmt(format_args!("loaduint {}", a)),
-            Instruction::LoadFloat(a) =>                    f.write_fmt(format_args!("loadfloat {}", a)),
-            Instruction::LoadByte(a) =>                     f.write_fmt(format_args!("loadbyte {}", a)),
-            Instruction::LoadChar(a) =>                     f.write_fmt(format_args!("loadchar {}", a)),
-            Instruction::LoadBool(a) =>                     f.write_fmt(format_args!("loadbool {}", a)),
+            Instruction::Load(a) =>                         f.write_fmt(format_args!("load {}", a)),
             Instruction::LoadString(a) =>                   f.write_fmt(format_args!("loadstring {}", a)),
             Instruction::LoadObject(a) =>                   f.write_fmt(format_args!("loadobject {}", a)),
             Instruction::LoadFunction(a) =>                 f.write_fmt(format_args!("loadfunction {}", a)),
@@ -71,19 +82,32 @@ impl Debug for Instruction {
             Instruction::Unimplemented =>                   f.write_str("unimplemented"),
             Instruction::Test =>                            f.write_str("test"),
             Instruction::Jump(a) =>                         f.write_fmt(format_args!("jump {}", a)),
-            Instruction::LoadVoid =>                        f.write_str("loadunit"),
-            Instruction::Add =>                             f.write_str("add"),
-            Instruction::Sub =>                             f.write_str("sub"),
-            Instruction::Mul =>                             f.write_str("mul"),
-            Instruction::Div =>                             f.write_str("div"),
-            Instruction::Neg =>                             f.write_str("neg"),
+            Instruction::AddI =>                            f.write_str("addi"),
+            Instruction::AddF =>                            f.write_str("addf"),
+            Instruction::SubI =>                            f.write_str("subi"),
+            Instruction::SubF =>                            f.write_str("subf"),
+            Instruction::MulI =>                            f.write_str("muli"),
+            Instruction::MulF =>                            f.write_str("mulf"),
+            Instruction::DivI =>                            f.write_str("divi"),
+            Instruction::DivU =>                            f.write_str("divu"),
+            Instruction::DivF =>                            f.write_str("divf"),
+            Instruction::NegI =>                             f.write_str("negi"),
+            Instruction::NegF =>                             f.write_str("negf"),
             Instruction::Not =>                             f.write_str("not"),
             Instruction::Eq(a) =>                           f.write_fmt(format_args!("eq {}", a)),
             Instruction::Ne(a) =>                           f.write_fmt(format_args!("ne {}", a)),
-            Instruction::Lt =>                              f.write_str("lt"),
-            Instruction::Le =>                              f.write_str("le"),
-            Instruction::Gt =>                              f.write_str("gt"),
-            Instruction::Ge =>                              f.write_str("ge"),
+            Instruction::LtI =>                              f.write_str("lti"),
+            Instruction::LtU =>                              f.write_str("ltu"),
+            Instruction::LtF =>                              f.write_str("ltf"),
+            Instruction::LeI =>                              f.write_str("lei"),
+            Instruction::LeU =>                              f.write_str("leu"),
+            Instruction::LeF =>                              f.write_str("lef"),
+            Instruction::GtI =>                              f.write_str("gti"),
+            Instruction::GtU =>                              f.write_str("gtu"),
+            Instruction::GtF =>                              f.write_str("gtf"),
+            Instruction::GeI =>                              f.write_str("gei"),
+            Instruction::GeU =>                              f.write_str("geu"),
+            Instruction::GeF =>                              f.write_str("gef"),
         }
     }
 }
@@ -109,26 +133,8 @@ fn visit_expr(ctx: &mut FunctionGenContext, expr: TypedValueExpr) -> Result<(), 
     let place = expr.place;
 
     match expr.kind {
-        TypedValueExprKind::LitInt(i) => {
-            ctx.instruct(Instruction::LoadInt(i));
-        }
-        TypedValueExprKind::LitUInt(i) => {
-            ctx.instruct(Instruction::LoadUInt(i));
-        }
-        TypedValueExprKind::LitVoid => {
-            ctx.instruct(Instruction::LoadVoid);
-        }
-        TypedValueExprKind::LitFloat(f) => {
-            ctx.instruct(Instruction::LoadFloat(f));
-        }
-        TypedValueExprKind::LitBool(b) => {
-            ctx.instruct(Instruction::LoadBool(b));
-        }
-        TypedValueExprKind::LitChar(c) => {
-            ctx.instruct(Instruction::LoadChar(c));
-        }
-        TypedValueExprKind::LitByte(i) => {
-            ctx.instruct(Instruction::LoadByte(i));
+        TypedValueExprKind::Primitive(i) => {
+            ctx.instruct(Instruction::Load(i));
         }
         TypedValueExprKind::GetFunction(func_idx) => {
             ctx.instruct(Instruction::LoadFunction(func_idx));
@@ -139,7 +145,7 @@ fn visit_expr(ctx: &mut FunctionGenContext, expr: TypedValueExpr) -> Result<(), 
                 static_idx
             } else {
                 let string_idx = ctx.string_table.len();
-                ctx.string_table.push(ObjectHeader::new(GCStage::Static, s));
+                ctx.string_table.push(s.into());
                 string_idx
             };
             ctx.instruct(Instruction::LoadString(static_idx));
@@ -229,30 +235,43 @@ fn visit_expr(ctx: &mut FunctionGenContext, expr: TypedValueExpr) -> Result<(), 
             visit_expr(ctx, *value)?;
         }
         TypedValueExprKind::ReassignVariable(_, _) => todo!(),
-        TypedValueExprKind::BinOp(binop_kind, left, right) => {
+        TypedValueExprKind::BinOp(op_kind, left, right) => {
             let size = left.type_.get_size();
             visit_expr(ctx, *left)?;
             visit_expr(ctx, *right)?;
-            match binop_kind {
-                BinOpKind::Add => ctx.instruct(Instruction::Add),
-                BinOpKind::Sub => ctx.instruct(Instruction::Sub),
-                BinOpKind::Mul => ctx.instruct(Instruction::Mul),
-                BinOpKind::Div => ctx.instruct(Instruction::Div),
-                BinOpKind::Eq => ctx.instruct(Instruction::Eq(size)),
-                BinOpKind::Ne => ctx.instruct(Instruction::Ne(size)),
-                BinOpKind::Lt => ctx.instruct(Instruction::Lt),
-                BinOpKind::Le => ctx.instruct(Instruction::Le),
-                BinOpKind::Gt => ctx.instruct(Instruction::Gt),
-                BinOpKind::Ge => ctx.instruct(Instruction::Ge),
-            }
+            ctx.instruct(match op_kind {
+                TypedBinOpKind::AddI => Instruction::AddI,
+                TypedBinOpKind::AddF => Instruction::AddF,
+                TypedBinOpKind::SubI => Instruction::SubI,
+                TypedBinOpKind::SubF => Instruction::SubF,
+                TypedBinOpKind::MulI => Instruction::MulI,
+                TypedBinOpKind::MulF => Instruction::MulF,
+                TypedBinOpKind::DivI => Instruction::DivI,
+                TypedBinOpKind::DivU => Instruction::DivU,
+                TypedBinOpKind::DivF => Instruction::DivF,
+                TypedBinOpKind::Eq => Instruction::Eq(size),
+                TypedBinOpKind::Ne => Instruction::Ne(size),
+                TypedBinOpKind::LtI => Instruction::LtI,
+                TypedBinOpKind::LtU => Instruction::LtU,
+                TypedBinOpKind::LtF => Instruction::LtF,
+                TypedBinOpKind::LeI => Instruction::LeI,
+                TypedBinOpKind::LeU => Instruction::LeU,
+                TypedBinOpKind::LeF => Instruction::LeF,
+                TypedBinOpKind::GtI => Instruction::GtI,
+                TypedBinOpKind::GtU => Instruction::GtU,
+                TypedBinOpKind::GtF => Instruction::GtF,
+                TypedBinOpKind::GeI => Instruction::GeI,
+                TypedBinOpKind::GeU => Instruction::GeU,
+                TypedBinOpKind::GeF => Instruction::GeF,
+            })
         },
-        TypedValueExprKind::UnOp(unop_kind, value) => {
+        TypedValueExprKind::UnOp(op_kind, value) => {
             visit_expr(ctx, *value)?;
-            match unop_kind {
-                UnOpKind::Pos => (),
-                UnOpKind::Neg => ctx.instruct(Instruction::Neg),
-                UnOpKind::Not => ctx.instruct(Instruction::Not),
-            }
+            ctx.instruct(match op_kind {
+                TypedUnOpKind::NegI => Instruction::NegI,
+                TypedUnOpKind::NegF => Instruction::NegF,
+                TypedUnOpKind::Not => Instruction::Not,
+            })
         }
     }
     Ok(())
@@ -340,7 +359,7 @@ pub fn codegen(tree: TypedAST) -> Result<PuffinProgram, CompilerError> {
             codegen_ctx.function_lookup.insert(exported_name.clone(), index);
         }
 
-        codegen_ctx.function_table.push(ObjectHeader::new(GCStage::Static, Box::new(PuffinFunction {
+        codegen_ctx.function_table.push(ObjectHeader::new(Box::new(PuffinFunction {
             instructions
         })));
     }

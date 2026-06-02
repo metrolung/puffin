@@ -5,9 +5,11 @@ use compiler::compiler::parser::parse;
 use compiler::compiler::semantics::semantic_check;
 
 use clap::Parser;
-use compiler::common::value::{CallableObjectHeader, GCStage, ObjectHeader, Value};
+use compiler::common::raw_value::ValueArray;
+use compiler::common::value::ObjectHeader;
 use compiler::compiler::codegen::codegen;
-use compiler::vm::callable::{FunctionHelper, Invoker, PuffinCallable, RuntimeError};
+use compiler::vm::callable::{FunctionHelper};
+use compiler::vm::garbage_collector::Heap;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -59,51 +61,34 @@ fn main() {
 
     let mut program = codegen(typed_ast).unwrap();
 
-    // let garbage_collector = GarbageCollector::default();
-    //
-    // let print_int_func = CallableObjectHeader::new(
-    //     GCStage::Static,
-    //     Box::new(
-    //         |_, params: Vec<Value>| {
-    //             println!("{:?}", params[0]);
-    //             Ok(vec![])
-    //         }
-    //     ) as Box<dyn PuffinCallable>
-    // );
+    program.link_function("package::printi".to_string(), FunctionHelper::new(|_, params| {
+        println!("{}", params[0].primitive().int());
+        Ok(vec![].into())
+    })).expect("linking error");
 
-    let print_str_func = FunctionHelper::new(|_, params: Vec<Value<'_>>| {
-        println!("{}", params[0].cast_string());
-        Ok(vec![])
-    });
+    program.link_function("package::print".to_string(), FunctionHelper::new(|_, params| {
+        println!("{}", unsafe { &params[0].reference().unwrap().string.value });
+        Ok(vec![].into())
+    })).expect("linking error");
 
-    let print_int_func = FunctionHelper::new(|_, params: Vec<Value<'_>>| {
-        println!("{}", params[0].cast_int());
-        Ok(vec![])
-    });
+    program.link_function("package::concat".to_string(), FunctionHelper::new(|ctx, params| {
+        let string0 = unsafe { &params[0].reference().unwrap().string.value };
+        let string1 = unsafe { &params[1].reference().unwrap().string.value };
 
-    let print_debug_func = FunctionHelper::new(|_, params: Vec<Value<'_>>| {
-        println!("{:?}", params[0]);
-        Ok(vec![])
-    });
+        let result = ctx.runtime.heap.new_string(format!("{}{}", string0, string1).to_string().into()).strong();
 
-    // let print_str_func = CallableObjectHeader::new(
-    //     GCStage::Static,
-    //     Box::new(
-    //         |_, params: Vec<Value<'_>>| {
-    //             println!("{:?}", params[0]);
-    //             Ok(vec![])
-    //         }
-    //     ) as Box<dyn PuffinCallable>
-    // );
-
-    program.link_function("package::printstr".to_string(), print_str_func).expect("linking error");
-    program.link_function("package::printi".to_string(), print_int_func).expect("linking error");
-    program.link_function("package::print_debug".to_string(), print_debug_func).expect("linking error");
+        Ok(vec![
+            result
+        ].into())
+    })).expect("linking error");
 
     println!("{:#?}", program);
-    
-    program.execute("package::main").expect("runtime error");
 
+    let mut heap = Heap::new();
+
+    program.execute(&mut heap, "package::main").expect("runtime error");
+
+    drop(heap);
     //
     // let mut linker = HashLinker::new();
     // linker.link(

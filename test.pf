@@ -10,46 +10,57 @@
 //    y int
 //}
 
-export print_debug(s value);
-export printstr(s str);
-export printi(i int);
+export concat(a str, b str) str;
+export printi(s value);
+export print(s str);
 
-
-fibb(n int) int {
-    if (n == 0) { return 0 };
-    if (n == 1) { return 1 };
-
-    fibb(n - 1) + fibb(n - 2)
-}
-
-factorial(n int) int {
-    if (n == 0) { return 1 };
-    if (n == 1) { return 1 };
-
-    n * factorial(n-1)
-}
+//
+//fibb(n int) int {
+//    if (n == 0) { return 0 };
+//    if (n == 1) { return 1 };
+//
+//    fibb(n - 1) + fibb(n - 2)
+//}
+//
+//factorial(n int) int {
+//    if (n == 0) { return 1 };
+//    if (n == 1) { return 1 };
+//
+//    n * factorial(n-1)
+//}
 
 
 export main() {
-    printstr("\n\n\nfibonacci tests");
-    print_debug(fibb(0));
-    print_debug(fibb(1));
-    print_debug(fibb(2));
-    print_debug(fibb(3));
-    print_debug(fibb(4));
-    print_debug(fibb(5));
-    print_debug(fibb(6));
-    print_debug(fibb(7));
-    print_debug(fibb(8));
+//    let val = concat("hello ", "world");
 
-    printstr("\nfactorial tests");
-    print_debug(factorial(0));
-    print_debug(factorial(1));
-    print_debug(factorial(2));
-    print_debug(factorial(3));
-    print_debug(factorial(4));
-    print_debug(factorial(5));
-    print_debug(factorial(6));
-    print_debug(factorial(7));
-    print_debug(factorial(8));
+    print(concat("hello ", "world"));
+    print(concat("hello ", "world"));
+    print(concat("hello ", "world"));
+    print(concat("hello ", "world"));
+
+//    printi(val)
+//
+//    print(concat("helloo", "world"));
+
+//    print("\n\n\nfibonacci tests");
+//    printi(fibb(0));
+//    printi(fibb(1));
+//    printi(fibb(2));
+//    printi(fibb(3));
+//    printi(fibb(4));
+//    printi(fibb(5));
+//    printi(fibb(6));
+//    printi(fibb(7));
+//    printi(fibb(8));
+//
+//    print("\nfactorial tests");
+//    printi(factorial(0));
+//    printi(factorial(1));
+//    printi(factorial(2));
+//    printi(factorial(3));
+//    printi(factorial(4));
+//    printi(factorial(5));
+//    printi(factorial(6));
+//    printi(factorial(7));
+//    printi(factorial(8));
 }

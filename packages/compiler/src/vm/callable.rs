@@ -1,41 +1,17 @@
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter, Write};
-use std::ptr;
-use std::rc::Rc;
-use crate::common::value::{CallableObjectHeader, GCStage, StringObjectHeader, Value};
+use crate::common::raw_value::{StrongValue, Value, ValueArray};
+use crate::common::value::{CallableObjectHeader, ObjectFlag, StringObjectHeader};
 use crate::compiler::codegen::Instruction;
-use crate::vm::garbage_collector::{ Stack, };
+use crate::vm::garbage_collector::{Heap, Stack};
 
-pub struct Runtime<'obj> {
-    program: &'obj PuffinProgram,
+pub struct Runtime<'heap, 'obj> {
+    pub program: &'obj PuffinProgram,
+    pub heap: &'heap mut Heap<'obj>,
     stack: Stack<'obj>,
 }
 
-
-// pub trait Linker {
-//     fn link(&self, runtime: &mut Runtime, name: &str) -> Option<Value>;
-// }
-//
-// pub struct HashLinker {
-//     map: HashMap<String, Value>
-// }
-//
-// impl HashLinker {
-//     pub fn new() -> Self {
-//         Self { map: HashMap::new() }
-//     }
-//
-//     pub fn link(&mut self, key: String, value: Value) {
-//         self.map.insert(key, value);
-//     }
-// }
-
-// impl Linker for HashLinker {
-//     fn link(&self, runtime: &mut Runtime, name: &str) -> Option<Value> {
-//         self.map.get(name).copied()
-//     }
-// }
 
 pub trait PuffinCallable {
     fn invoke(&self, runtime: &mut Runtime, frame_start: usize) -> Result<(), RuntimeError>;
@@ -45,91 +21,49 @@ pub trait PuffinCallable {
 #[derive(Debug)]
 pub struct RuntimeError(pub String);
 
-// pub struct Invoker<'a, 'r> {
-//     runtime: &'a mut Runtime<'a, 'r>,
-//     static_pool: &'a GCPool<'r>,
-//     frame_start: usize
-// }
-//
-
-pub struct Invoker<'runtime, 'obj> {
-    runtime: &'runtime mut Runtime<'obj>,
+pub struct CallContext<'runtime, 'heap, 'obj> {
+    pub runtime: &'runtime mut Runtime<'heap, 'obj>,
     frame_start: usize
 }
-//
-// impl<'runtime, 'obj> Invoker<'runtime, 'obj> {
-//     pub fn invoke(&mut self, value: &dyn PuffinCallable) -> Result<Vec<Value<'obj>>, RuntimeError> {
-//         value.invoke(self.runtime, self.frame_start)?;
-//
-//         let mut returns = vec![Value::Unit; self.runtime.stack.ptr];
-//         self.runtime.stack.get_many(0, &mut returns)?;
-//         Ok(returns)
-//     }
-// }
 
-// type NativeFunctionFunctionType<'runtime, 'obj> = fn(
-//     fn(
-//         invoker: Invoker<'runtime, 'obj>,
-//         params: Vec<Value<'obj>>
-//     ) -> Result<Vec<Value<'obj>>, RuntimeError>
-// );
-//
+impl<'runtime, 'heap, 'obj> CallContext<'runtime, 'heap, 'obj> {
+    pub fn invoke(&mut self, value: StrongValue, params: Vec<StrongValue<'obj>>) -> Result<Vec<StrongValue<'obj>>, RuntimeError> {
+        for param in params {
+            self.runtime.stack.push(param.value())?;
+        }
 
+        let param0 = self.runtime.stack.get_ptr();
+        value.value().invoke(self.runtime, self.frame_start)?;
+        let param_n = self.runtime.stack.get_ptr();
 
-
-
-// #[derive(Debug)]
-// pub struct NativeFunction {
-//     function: for<'runtime, 'obj> fn(
-//         invoker: Invoker<'runtime, 'obj>,
-//         params: Vec<Value<'obj>>
-//     ) -> Result<Vec<Value<'obj>>, RuntimeError>,
-// }
-//
-// impl NativeFunction {
-//     pub fn new(
-//         function: for<'runtime, 'obj> fn(
-//             invoker: Invoker<'runtime, 'obj>,
-//             params: Vec<Value<'obj>>
-//         ) -> Result<Vec<Value<'obj>>, RuntimeError>
-//     ) -> Self {
-//         Self { function }
-//     }
-// }
-//
+        Ok(self.runtime.stack.pop_many(param_n - param0)?.to_strong_vec())
+    }
+}
 
 pub enum FunctionHelper {}
 
 impl FunctionHelper {
-    pub fn new(callable: impl for <'obj> Fn(Invoker<'_, 'obj>, Vec<Value<'obj>>) -> Result<Vec<Value<'obj>>, RuntimeError> + 'static) -> CallableObjectHeader {
+    pub fn new(callable: impl for <'obj> Fn(CallContext<'_, '_, 'obj>, Vec<StrongValue<'obj>>) -> Result<Vec<StrongValue<'obj>>, RuntimeError> + 'static) -> CallableObjectHeader {
         CallableObjectHeader::new(
-            GCStage::Static,
             Box::new(callable) as Box<dyn PuffinCallable>
         )
     }
 }
 
-// type VariadicFunction<T> where T: impl for<'runtime, 'obj> Fn(
-//     invoker: Invoker<'runtime, 'obj>,
-//     params: Vec<Value<'obj>>
-// ) -> Result<Vec<Value<'obj>>, RuntimeError> = T;
-
 impl<T> PuffinCallable for T
-where T: for <'obj> Fn(Invoker<'_, 'obj>, Vec<Value<'obj>>) -> (Result<Vec<Value<'obj>>, RuntimeError>) {
+where T: for <'obj> Fn(CallContext<'_, '_, 'obj>, Vec<StrongValue<'obj>>) -> (Result<Vec<StrongValue<'obj>>, RuntimeError>) {
     fn invoke(&self, runtime: &mut Runtime, frame_start: usize) -> Result<(), RuntimeError> {
-        let mut buf = vec![Value::Void; runtime.stack.get_ptr()-frame_start];
-        runtime.stack.get_many(frame_start, &mut buf)?;
-        runtime.stack.move_back_ptr(frame_start)?;
+        let values = runtime.stack.pop_many(runtime.stack.get_ptr()-frame_start)?;
         
-        let invoker = Invoker {
+        let invoker = CallContext {
             runtime,
             frame_start
         };
 
-        let result = self(invoker, buf)?;
+        let result = self(invoker, values.to_strong_vec())?;
 
-        for value in result {
-            runtime.stack.push(value)?;
+        for i in 0..result.len() {
+            runtime.stack.push(result[i].value())?;
         }
 
         Ok(())
@@ -138,11 +72,11 @@ where T: for <'obj> Fn(Invoker<'_, 'obj>, Vec<Value<'obj>>) -> (Result<Vec<Value
 
 impl PuffinCallable for Value<'_> {
     fn invoke(&self, runtime: &mut Runtime, frame_start: usize) -> Result<(), RuntimeError> {
-        let Value::Callable(callable) = self else {
-            return Err(RuntimeError("value is not function".to_string()))
+        let Some(obj) = self.reference() else {
+            return Err(RuntimeError("cannot dereference non ptr".to_string()))
         };
 
-        callable.invoke(runtime, frame_start)
+        unsafe { (*obj.callable).invoke(runtime, frame_start) }
     }
 
     fn debug(&self) -> Option<&dyn Debug> {
@@ -177,9 +111,10 @@ impl PuffinProgram {
         Ok(())
     }
 
-    pub fn execute<'obj>(&'obj self, name: &str) -> Result<Vec<Value<'obj>>, RuntimeError> {
-        let mut puffin_thread: Runtime<'obj> = Runtime {
+    pub fn execute<'obj>(&'obj self, heap: &mut Heap<'obj>, name: &str) -> Result<ValueArray<'obj>, RuntimeError> {
+        let mut puffin_thread = Runtime {
             program: &self,
+            heap,
             stack: Stack::new(),
         };
 
@@ -187,10 +122,10 @@ impl PuffinProgram {
         let function = &self.function_table[*function_idx];
         function.value.invoke(&mut puffin_thread, 0)?;
 
-        let mut returns = vec![Value::Void; puffin_thread.stack.get_ptr()];
-        puffin_thread.stack.get_many(0, &mut returns)?;
+        // let mut returns = vec![Value::Void; puffin_thread.stack.get_ptr()];
+        let values = puffin_thread.stack.get_many(0..puffin_thread.stack.get_ptr())?;
 
-        Ok(returns)
+        Ok(values)
     }
 }
 
@@ -214,28 +149,17 @@ impl PuffinCallable for PuffinFunction {
         loop {
             let instruction = self.instructions.get(instruction_idx).ok_or(RuntimeError("instruction out of bounds".to_string()))?;
 
+            {
+                let stack = runtime.stack.data.get_subset(0..runtime.stack.get_ptr()).to_vec();
+
+                drop(stack);
+                // println!("{:?}", stack);
+            }
+
             instruction_idx += 1;
 
             match instruction {
-                Instruction::LoadInt(i) => {
-                    runtime.stack.push((*i).into())?
-                }
-                Instruction::LoadUInt(i) => {
-                    runtime.stack.push((*i).into())?
-                }
-                Instruction::LoadVoid => {
-                    runtime.stack.push(().into())?
-                }
-                Instruction::LoadFloat(f) => {
-                    runtime.stack.push((*f).into())?
-                }
-                Instruction::LoadChar(c) => {
-                    runtime.stack.push((*c).into())?
-                }
-                Instruction::LoadBool(b) => {
-                    runtime.stack.push((*b).into())?
-                }
-                Instruction::LoadByte(i) => {
+                Instruction::Load(i) => {
                     runtime.stack.push((*i).into())?
                 }
                 Instruction::LoadString(idx) => {
@@ -251,10 +175,9 @@ impl PuffinCallable for PuffinFunction {
                 }
                 Instruction::LoadLocal(local_idx, size) => {
                     let adr = frame_start + *local_idx as usize;
-                    let mut buf = vec![Value::Void; *size as usize];
-                    runtime.stack.get_many(adr, &mut buf)?;
-                    for value in buf {
-                        runtime.stack.push(value)?;
+                    let values = runtime.stack.get_many(adr..adr+*size as usize)?;
+                    for i in 0..values.len() {
+                        runtime.stack.push(values.get(i))?;
                     }
                 }
                 Instruction::Invoke(callable_idx, param_size) => {
@@ -290,76 +213,141 @@ impl PuffinCallable for PuffinFunction {
                 }
                 Instruction::Test => {
                     let test_value = runtime.stack.pop()?;
-                    if test_value != Value::Bool(false) {
+                    if test_value.primitive().uint() != 0 {
                         instruction_idx += 1
                     }
                 }
                 Instruction::Jump(idx) => {
                     instruction_idx = *idx;
                 }
-                Instruction::Add => {
-                    let right = runtime.stack.pop()?;
-                    let left = runtime.stack.pop()?;
-                    runtime.stack.push((left + right).ok_or(RuntimeError("cannot be applied to types".to_string()))?)?;
+                Instruction::AddI => {
+                    let right = runtime.stack.pop()?.primitive().uint();
+                    let left = runtime.stack.pop()?.primitive().uint();
+                    runtime.stack.push((left + right).into())?;
                 }
-                Instruction::Sub => {
-                    let right = runtime.stack.pop()?;
-                    let left = runtime.stack.pop()?;
-                    runtime.stack.push((left - right).ok_or(RuntimeError("cannot be applied to types".to_string()))?)?;
+                Instruction::AddF => {
+                    let right = runtime.stack.pop()?.primitive().float();
+                    let left = runtime.stack.pop()?.primitive().float();
+                    runtime.stack.push((left + right).into())?;
                 }
-                Instruction::Mul => {
-                    let right = runtime.stack.pop()?;
-                    let left = runtime.stack.pop()?;
-                    runtime.stack.push((left * right).ok_or(RuntimeError("cannot be applied to types".to_string()))?)?;
+                Instruction::SubI => {
+                    let right = runtime.stack.pop()?.primitive().uint();
+                    let left = runtime.stack.pop()?.primitive().uint();
+                    runtime.stack.push((left - right).into())?;
                 }
-                Instruction::Div => {
-                    let right = runtime.stack.pop()?;
-                    let left = runtime.stack.pop()?;
-                    runtime.stack.push((left / right).ok_or(RuntimeError("cannot be applied to types".to_string()))?)?;
+                Instruction::SubF => {
+                    let right = runtime.stack.pop()?.primitive().float();
+                    let left = runtime.stack.pop()?.primitive().float();
+                    runtime.stack.push((left - right).into())?;
+                }
+                Instruction::MulI => {
+                    let right = runtime.stack.pop()?.primitive().uint();
+                    let left = runtime.stack.pop()?.primitive().uint();
+                    runtime.stack.push((left * right).into())?;
+                }
+                Instruction::MulF => {
+                    let right = runtime.stack.pop()?.primitive().float();
+                    let left = runtime.stack.pop()?.primitive().float();
+                    runtime.stack.push((left * right).into())?;
+                }
+                Instruction::DivU => {
+                    let right = runtime.stack.pop()?.primitive().uint();
+                    let left = runtime.stack.pop()?.primitive().uint();
+                    runtime.stack.push((left / right).into())?;
+                }
+                Instruction::DivI => {
+                    let right = runtime.stack.pop()?.primitive().int();
+                    let left = runtime.stack.pop()?.primitive().int();
+                    runtime.stack.push((left / right).into())?;
+                }
+                Instruction::DivF => {
+                    let right = runtime.stack.pop()?.primitive().float();
+                    let left = runtime.stack.pop()?.primitive().float();
+                    runtime.stack.push((left / right).into())?;
                 }
                 Instruction::Eq(size) => {
-                    let mut left = vec![Value::Void; *size as usize];
-                    runtime.stack.pop_many(&mut left)?;
-                    let mut right = vec![Value::Void; *size as usize];
-                    runtime.stack.pop_many(&mut right)?;
+                    let right = runtime.stack.pop_many(*size as usize)?;
+                    let left = runtime.stack.pop_many(*size as usize)?;
 
                     runtime.stack.push((left == right).into())?;
                 }
                 Instruction::Ne(size) => {
-                    let mut left = vec![Value::Void; *size as usize];
-                    runtime.stack.pop_many(&mut left)?;
-                    let mut right = vec![Value::Void; *size as usize];
-                    runtime.stack.pop_many(&mut right)?;
+                    let right = runtime.stack.pop_many(*size as usize)?;
+                    let left = runtime.stack.pop_many(*size as usize)?;
 
                     runtime.stack.push((left != right).into())?;
                 }
-                Instruction::Lt => {
-                    let right = runtime.stack.pop()?;
-                    let left = runtime.stack.pop()?;
-                    runtime.stack.push(left.partial_cmp(&right).ok_or(RuntimeError("cannot be applied to types".to_string()))?.is_lt().into())?;
+                Instruction::LtI => {
+                    let right = runtime.stack.pop()?.primitive().int();
+                    let left = runtime.stack.pop()?.primitive().int();
+                    runtime.stack.push(left.cmp(&right).is_lt().into())?;
                 }
-                Instruction::Le => {
-                    let right = runtime.stack.pop()?;
-                    let left = runtime.stack.pop()?;
-                    runtime.stack.push(left.partial_cmp(&right).ok_or(RuntimeError("cannot be applied to types".to_string()))?.is_le().into())?;
+                Instruction::LtU => {
+                    let right = runtime.stack.pop()?.primitive().uint();
+                    let left = runtime.stack.pop()?.primitive().uint();
+                    runtime.stack.push(left.cmp(&right).is_lt().into())?;
                 }
-                Instruction::Gt => {
-                    let right = runtime.stack.pop()?;
-                    let left = runtime.stack.pop()?;
-                    runtime.stack.push(left.partial_cmp(&right).ok_or(RuntimeError("cannot be applied to types".to_string()))?.is_gt().into())?;
+                Instruction::LtF => {
+                    let right = runtime.stack.pop()?.primitive().float();
+                    let left = runtime.stack.pop()?.primitive().float();
+                    runtime.stack.push(left.cmp(&right).is_lt().into())?;
                 }
-                Instruction::Ge => {
-                    let right = runtime.stack.pop()?;
-                    let left = runtime.stack.pop()?;
-                    runtime.stack.push(left.partial_cmp(&right).ok_or(RuntimeError("cannot be applied to types".to_string()))?.is_ge().into())?;
+                Instruction::LeI => {
+                    let right = runtime.stack.pop()?.primitive().int();
+                    let left = runtime.stack.pop()?.primitive().int();
+                    runtime.stack.push(left.cmp(&right).is_le().into())?;
                 }
-                Instruction::Neg => {
-                    let value = runtime.stack.pop()?;
-                    runtime.stack.push((-value).ok_or(RuntimeError("cannot be applied to type".to_string()))?)?;
+                Instruction::LeU => {
+                    let right = runtime.stack.pop()?.primitive().uint();
+                    let left = runtime.stack.pop()?.primitive().uint();
+                    runtime.stack.push(left.cmp(&right).is_le().into())?;
+                }
+                Instruction::LeF => {
+                    let right = runtime.stack.pop()?.primitive().float();
+                    let left = runtime.stack.pop()?.primitive().float();
+                    runtime.stack.push(left.cmp(&right).is_le().into())?;
+                }
+                Instruction::GtI => {
+                    let right = runtime.stack.pop()?.primitive().int();
+                    let left = runtime.stack.pop()?.primitive().int();
+                    runtime.stack.push(left.cmp(&right).is_gt().into())?;
+                }
+                Instruction::GtU => {
+                    let right = runtime.stack.pop()?.primitive().uint();
+                    let left = runtime.stack.pop()?.primitive().uint();
+                    runtime.stack.push(left.cmp(&right).is_gt().into())?;
+                }
+                Instruction::GtF => {
+                    let right = runtime.stack.pop()?.primitive().float();
+                    let left = runtime.stack.pop()?.primitive().float();
+                    runtime.stack.push(left.cmp(&right).is_gt().into())?;
+                }
+                Instruction::GeI => {
+                    let right = runtime.stack.pop()?.primitive().int();
+                    let left = runtime.stack.pop()?.primitive().int();
+                    runtime.stack.push(left.cmp(&right).is_ge().into())?;
+                }
+                Instruction::GeU => {
+                    let right = runtime.stack.pop()?.primitive().uint();
+                    let left = runtime.stack.pop()?.primitive().uint();
+                    runtime.stack.push(left.cmp(&right).is_ge().into())?;
+                }
+                Instruction::GeF => {
+                    let right = runtime.stack.pop()?.primitive().float();
+                    let left = runtime.stack.pop()?.primitive().float();
+                    runtime.stack.push(left.cmp(&right).is_ge().into())?;
+                }
+                Instruction::NegI => {
+                    let value = runtime.stack.pop()?.primitive().int();
+                    runtime.stack.push((-value).into())?;
+                }
+                Instruction::NegF => {
+                    let value = runtime.stack.pop()?.primitive().float();
+                    runtime.stack.push((-value).into())?;
                 }
                 Instruction::Not => {
-                    let value = runtime.stack.pop()?;
-                    runtime.stack.push((!value).ok_or(RuntimeError("cannot be applied to type".to_string()))?)?;
+                    let value = runtime.stack.pop()?.primitive().uint();
+                    runtime.stack.push((!value).into())?;
                 }
             }
         }

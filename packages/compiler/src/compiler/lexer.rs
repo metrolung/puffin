@@ -8,7 +8,6 @@ use std::sync::Mutex;
 use anyhow::{anyhow, bail, Result};
 use crate::compiler::error::CompilerError;
 use crate::compiler::position::{PinPosition, Position, SpanPosition};
-use crate::common::fsize::fsize;
 
 pub enum Source {
     String(String),
@@ -109,11 +108,10 @@ pub enum TokenKind {
     Export,
     As,
 
-    Integer(isize),
-    UInteger(usize),
-    Float(fsize),
+    Integer(i64),
+    UInteger(u64),
+    Float(f64),
     Char(char),
-    Byte(u8),
 }
 
 #[derive(Debug, Clone)]
@@ -342,28 +340,28 @@ fn read_number(ctx: &mut LexContext) -> Result<()> {
         match peeked {
             'u' => {
                 end_pos = ctx.next().unwrap().pos();
-                kind = TokenKind::UInteger(usize::from_str(&number)?);
+                kind = TokenKind::UInteger(u64::from_str(&number)?);
             }
             'i' => {
                 end_pos = ctx.next().unwrap().pos();
-                kind = TokenKind::Integer(isize::from_str(&number)?);
+                kind = TokenKind::Integer(i64::from_str(&number)?);
             }
             'f' => {
                 end_pos = ctx.next().unwrap().pos();
-                kind = TokenKind::Float(fsize::from_str(&number)?);
+                kind = TokenKind::Float(f64::from_str(&number)?);
             },
             _ => {
                 if decimal {
-                    kind = TokenKind::Float(fsize::from_str(&number)?);
+                    kind = TokenKind::Float(f64::from_str(&number)?);
                 } else {
-                    kind = TokenKind::Integer(isize::from_str(&number)?);
+                    kind = TokenKind::Integer(i64::from_str(&number)?);
                 }
             }
         }
     } else if decimal {
-        kind = TokenKind::Float(fsize::from_str(&number)?);
+        kind = TokenKind::Float(f64::from_str(&number)?);
     } else {
-        kind = TokenKind::Integer(isize::from_str(&number)?);
+        kind = TokenKind::Integer(i64::from_str(&number)?);
     }
 
     let token = Token {

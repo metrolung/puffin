@@ -5,7 +5,6 @@ use std::thread::spawn;
 use anyhow::{anyhow, bail, Result};
 use crate::compiler::lexer::{Token, TokenKind};
 use crate::compiler::position::{Position, SpanPosition};
-use crate::common::fsize::fsize;
 
 #[derive(Debug, Clone)]
 pub enum BinOpKind {
@@ -32,10 +31,9 @@ pub enum ValueExprKind {
     Tuple(Vec<ValueExpr>),
     Call(Box<ValueExpr>, Vec<ValueExpr>),
     LitStr(String),
-    LitInt(isize),
-    LitUInt(usize),
-    LitFloat(fsize),
-    LitByte(u8),
+    LitInt(i64),
+    LitUInt(u64),
+    LitFloat(f64),
     LitChar(char),
     LitBool(bool),
     Return(Option<Box<ValueExpr>>),
@@ -384,8 +382,6 @@ fn value(ctx: &mut ParseContext) -> Result<ValueExpr> {
                     Ok(ValueExprKind::LitFloat(*f).expr(token.span)),
                 TokenKind::Char(c) =>
                     Ok(ValueExprKind::LitChar(*c).expr(token.span)),
-                TokenKind::Byte(b) =>
-                    Ok(ValueExprKind::LitByte(*b).expr(token.span)),
                 TokenKind::True =>
                     Ok(ValueExprKind::LitBool(true).expr(token.span)),
                 TokenKind::False =>
@@ -409,13 +405,10 @@ fn access(ctx: &mut ParseContext) -> Result<ValueExpr> {
                         left = ValueExprKind::IdentifierAccess(Box::new(left), s.clone()).expr(index.span)
                     }
                     TokenKind::Integer(i) => {
-                        left = ValueExprKind::IntegerAccess(Box::new(left), (*i) as usize).expr(index.span)
-                    }
-                    TokenKind::Byte(i) => {
-                        left = ValueExprKind::IntegerAccess(Box::new(left), (*i) as usize).expr(index.span)
+                        left = ValueExprKind::IntegerAccess(Box::new(left), *i as usize).expr(index.span)
                     }
                     TokenKind::UInteger(i) => {
-                        left = ValueExprKind::IntegerAccess(Box::new(left), *i).expr(index.span)
+                        left = ValueExprKind::IntegerAccess(Box::new(left), *i as usize).expr(index.span)
                     }
                     _ => bail!("expected an identifier or an integer")
                 }

@@ -12,13 +12,10 @@ use std::thread::scope;
 
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 // use corosensei::{Coroutine, Yielder};
-use crate::common::value::{GCStage, ObjectHeader, Value};
+use crate::common::value::{ ObjectHeader};
 
 use crate::compiler::error::CompilerError;
 use crate::compiler::position::{Position, SpanPosition};
-use enum_assoc::Assoc;
-use log::error;
-use crate::common::fsize::fsize;
 use crate::compiler::namespace::{Namespace, Path};
 
 // #[derive(Debug)]
@@ -39,7 +36,6 @@ pub enum Type {
     UInt,
     Float,
     Char,
-    Byte,
     Str,
     Bool,
     Void,
@@ -121,17 +117,30 @@ enum SemanticValue {
 }
 
 #[derive(Debug, Clone)]
+pub enum TypedBinOpKind {
+    AddI, AddF,
+    SubI, SubF,
+    MulI, MulF,
+    DivI, DivU, DivF,
+    Eq, Ne,
+    LtI, LtU, LtF,
+    LeI, LeU, LeF,
+    GtI, GtU, GtF,
+    GeI, GeU, GeF
+}
+
+#[derive(Debug, Clone)]
+pub enum TypedUnOpKind {
+    NegI, NegF,
+    Not
+}
+
+#[derive(Debug, Clone)]
 pub enum TypedValueExprKind {
     // Value(Value),
     // String(String),
     LitStr(String),
-    LitInt(isize),
-    LitUInt(usize),
-    LitVoid,
-    LitFloat(fsize),
-    LitByte(u8),
-    LitChar(char),
-    LitBool(bool),
+    Primitive(u64),
     // Unreachable,
     Invoke(Box<TypedValueExpr>, Vec<TypedValueExpr>),
     Tuple(Vec<TypedValueExpr>),
@@ -148,8 +157,8 @@ pub enum TypedValueExprKind {
     GetFunction(FunctionIdx),
     // AssignVariable(Box<TypedExpr>),
     ReassignVariable(Offset, Box<TypedValueExpr>),
-    BinOp(BinOpKind, Box<TypedValueExpr>, Box<TypedValueExpr>),
-    UnOp(UnOpKind, Box<TypedValueExpr>),
+    BinOp(TypedBinOpKind, Box<TypedValueExpr>, Box<TypedValueExpr>),
+    UnOp(TypedUnOpKind, Box<TypedValueExpr>),
     Return(Option<Box<TypedValueExpr>>),
     Block(
         Vec<TypedValueExpr>,
@@ -281,7 +290,6 @@ fn can_cast_to(pass: &DefinitionPass, type_a: &Type, type_b: &Type) -> bool {
             | Type::UInt
             | Type::Float
             | Type::Char
-            | Type::Byte
             | Type::Str
             | Type::Bool
             | Type::Void => return true,
@@ -315,7 +323,6 @@ fn cast(pass: &DefinitionPass, span: &SpanPosition, expr: TypedValueExpr, ty: Ty
             | Type::UInt
             | Type::Float
             | Type::Char
-            | Type::Byte
             | Type::Str
             | Type::Bool
             | Type::Void => return expr,
@@ -323,7 +330,7 @@ fn cast(pass: &DefinitionPass, span: &SpanPosition, expr: TypedValueExpr, ty: Ty
         }
 
         if expr.type_.is_unit() {
-            return TypedValueExprKind::LitVoid.expr(*span, ty, place)
+            return TypedValueExprKind::Primitive(0).expr(*span, ty, place)
         }
     }
 
@@ -373,131 +380,6 @@ fn find(ctx: &mut SemanticContext, mut path: Path, name: String) -> Option<Seman
 fn borrow_ctx<'a>(pass: &'a DefinitionPass) -> RefMut<'a, SemanticContext> {
     pass.ctx.borrow_mut()
 }
-
-// fn get_common_type(
-//     pass: &DefinitionPass,
-//     span: &SpanPosition,
-//     type_a: &Type,
-//     type_b: &Type,
-// ) -> Type {
-//     if type_a != type_b {
-//         return type_a.clone();
-//     }
-//
-//     if is_subtype_of(pass, type_b, type_a) {
-//         return type_a.clone();
-//     }
-//
-//     if is_subtype_of(pass, type_a, type_b) {
-//         return type_b.clone();
-//     }
-//
-//     match (type_a, type_b) {
-//         (Type::Never, _) => type_b.clone(),
-//         (_, Type::Never) => type_a.clone(),
-//         _ => error(pass, "incompatible types", span),
-//     }
-// }
-
-// fn is_same_type(pass: &DefinitionPass, type_a: &Type, type_b: &Type) -> bool {
-//     match (type_a, type_b) {
-//         (Type::Never, Type::Never) => true,
-//         (Type::Callable(a, b), Type::Callable(c, d)) => {
-//             if a.len() != c.len() {
-//                 return false;
-//             }
-//
-//             for i in 0..a.len() {
-//                 if !is_same_type(pass, &a[i], &c[i]) {
-//                     return false;
-//                 }
-//             }
-//
-//             is_same_type(pass, b, d)
-//         },
-//         (Type::Struct(struct_a), Type::Struct(struct_b)) => struct_a == struct_b,
-//         (Type::Tuple(contents_a), Type::Tuple(contents_b)) => {
-//             if contents_a.len() != contents_b.len() {
-//                 false
-//             } else {
-//                 for i in 0..contents_a.len() {
-//                     if !is_same_type(pass, &contents_a[i], &contents_b[i]) {
-//                         return false
-//                     }
-//                 }
-//                 true
-//             }
-//         }
-//         _ => false,
-//     }
-// }
-
-// todo: warning, this is here
-// fn can_cast_to(pass: &DefinitionPass, subtype: &Type, super_type: &Type) -> bool {
-//     (subtype != super_type) || is_subtype_of(pass, subtype, super_type)
-// }
-
-// todo: warning, this is here
-// fn is_subtype_of(pass: &DefinitionPass, subtype: &Type, super_type: &Type) -> bool {
-//     match (subtype, super_type) {
-//         (Type::Never, _) => true,
-//         _ => false,
-//     }
-// }
-
-// fn unit(pass: &DefinitionPass, span: SpanPosition) -> SemanticValue {
-//     SemanticValue::Expr(
-//         TypedExprKind::LitUnit.expr(span, unit_type(pass)),
-//         Type::Never
-//     )
-// }
-
-// fn unit_type(pass: &DefinitionPass) -> Type {
-//     Type::StructObject(borrow_ctx(pass).standard.void.clone())
-// }
-
-// fn visit_expr_expect_expr(
-//     pass: &DefinitionPass,
-//     path: Path,
-//     scope_expr_idx: &mut usize,
-//     local_var_idx: &mut Offset,
-//     expr: &ValueExpr,
-// ) -> (TypedExpr, Type) {
-//     let place = *local_var_idx;
-//     let span = &expr.span;
-//     let expr = visit_value_expr(pass, path, scope_expr_idx, local_var_idx, expr);
-//     match expr {
-//         SemanticValue::Expr(expr, return_type, ..) => (expr, return_type),
-//         SemanticValue::Function { param_types, return_type, function_idx } => {
-//             *local_var_idx += 1;
-//             (TypedExprKind::GetFunction(function_idx)
-//                  .expr(
-//                      span.clone(),
-//                      Type::Callable(param_types, Box::new(return_type)),
-//                      place
-//                  ), Type::Never)
-//         },
-//         SemanticValue::LocalVariable(type_, idx) => {
-//             *local_var_idx += type_.get_size();
-//             (TypedExprKind::LocalAccess(idx)
-//                  .expr(
-//                      span.clone(),
-//                      type_,
-//                      place
-//                  ), Type::Never)
-//         }
-//         SemanticValue::ConstVariable(type_, idx) => {
-//             *local_var_idx += type_.get_size();
-//             (TypedExprKind::ConstVariable(idx)
-//                  .expr(
-//                      span.clone(),
-//                      type_,
-//                      place
-//                  ), Type::Never)
-//         }
-//         _ => error(pass, "expected expression", span),
-//     }
-// }
 
 fn visit_type_expr(
     pass: &DefinitionPass,
@@ -593,32 +475,27 @@ fn visit_value_expr(
         }
         ValueExprKind::LitInt(i) => {
             *local_var_idx += 1;
-            TypedValueExprKind::LitInt(*i)
+            TypedValueExprKind::Primitive(*i as u64)
                 .expr(span, Type::Int, place)
         }
         ValueExprKind::LitUInt(i) => {
             *local_var_idx += 1;
-            TypedValueExprKind::LitUInt(*i)
+            TypedValueExprKind::Primitive(*i)
                 .expr(span, Type::UInt, place)
         }
         ValueExprKind::LitFloat(i) => {
             *local_var_idx += 1;
-            TypedValueExprKind::LitFloat(*i)
+            TypedValueExprKind::Primitive(f64::to_bits(*i))
                 .expr(span, Type::Float, place)
-        }
-        ValueExprKind::LitByte(i) => {
-            *local_var_idx += 1;
-            TypedValueExprKind::LitByte(*i)
-                .expr(span, Type::Byte, place)
         }
         ValueExprKind::LitChar(i) => {
             *local_var_idx += 1;
-            TypedValueExprKind::LitChar(*i)
+            TypedValueExprKind::Primitive(*i as u64)
                 .expr(span, Type::Char, place)
         }
         ValueExprKind::LitBool(i) => {
             *local_var_idx += 1;
-            TypedValueExprKind::LitBool(*i)
+            TypedValueExprKind::Primitive(*i as u8 as u64)
                 .expr(span, Type::Bool, place)
         }
         ValueExprKind::LitStr(s) => {
@@ -852,91 +729,77 @@ fn visit_value_expr(
                 passed_typed_params
             ).expr(span, *function_return_type, place)
         }
-        ValueExprKind::BinOp(binop_kind, left, right) => {
+        ValueExprKind::BinOp(op_kind, left, right) => {
             let mut param_var_idx = local_var_idx.clone();
             let left = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, &mut param_var_idx, left);
             let right = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, &mut param_var_idx, right);
 
-            // | BinOpKind::Eq | BinOpKind::Ne | BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge,
+            let (op_kind, result_type) = match (op_kind, &left.type_, &right.type_) {
+                (BinOpKind::Add, Type::Int, Type::Int) => (TypedBinOpKind::AddI, Type::Int),
+                (BinOpKind::Add, Type::UInt, Type::UInt) => (TypedBinOpKind::AddI, Type::UInt),
+                (BinOpKind::Add, Type::Float, Type::Float) => (TypedBinOpKind::AddI, Type::Float),
 
-            let result_type = match (&binop_kind, &left.type_, &right.type_) {
-                (
-                    BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div,
-                    Type::Int, Type::Int
-                ) => Type::Int,
-                (
-                    BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div,
-                    Type::UInt, Type::UInt
-                ) => Type::UInt,
-                (
-                    BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div,
+                (BinOpKind::Sub, Type::Int, Type::Int) => (TypedBinOpKind::SubI, Type::Int),
+                (BinOpKind::Sub, Type::UInt, Type::UInt) => (TypedBinOpKind::SubI, Type::UInt),
+                (BinOpKind::Sub, Type::Float, Type::Float) => (TypedBinOpKind::SubF, Type::Float),
 
-                    Type::Float, Type::Float
-                ) => Type::Float,
-                (
-                    BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div,
-                    Type::Byte, Type::Byte
-                ) => Type::Byte,
-                (
-                    BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge,
-                    Type::Int, Type::Int
-                ) => Type::Bool,
-                (
-                    BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge,
-                    Type::UInt, Type::UInt
-                ) => Type::Bool,
-                (
-                    BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge,
-                    Type::Float, Type::Float
-                ) => Type::Bool,
-                (
-                    BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge,
-                    Type::Byte, Type::Byte
-                ) => Type::Bool,
-                (
-                    BinOpKind::Eq | BinOpKind::Ne,
-                    a, b
-                ) if a == b => Type::Bool,
+                (BinOpKind::Mul, Type::Int, Type::Int) => (TypedBinOpKind::MulI, Type::Int),
+                (BinOpKind::Mul, Type::UInt, Type::UInt) => (TypedBinOpKind::MulI, Type::UInt),
+                (BinOpKind::Mul, Type::Float, Type::Float) => (TypedBinOpKind::MulF, Type::Float),
+
+                (BinOpKind::Div, Type::Int, Type::Int) => (TypedBinOpKind::DivI, Type::Int),
+                (BinOpKind::Div, Type::UInt, Type::UInt) => (TypedBinOpKind::DivU, Type::UInt),
+                (BinOpKind::Div, Type::Float, Type::Float) => (TypedBinOpKind::DivF, Type::Float),
+
+                (BinOpKind::Lt, Type::Int, Type::Int) => (TypedBinOpKind::LtI, Type::Int),
+                (BinOpKind::Lt, Type::UInt, Type::UInt) => (TypedBinOpKind::LtU, Type::UInt),
+                (BinOpKind::Lt, Type::Float, Type::Float) => (TypedBinOpKind::LtF, Type::Float),
+
+                (BinOpKind::Le, Type::Int, Type::Int) => (TypedBinOpKind::LeI, Type::Int),
+                (BinOpKind::Le, Type::UInt, Type::UInt) => (TypedBinOpKind::LeU, Type::UInt),
+                (BinOpKind::Le, Type::Float, Type::Float) => (TypedBinOpKind::LeF, Type::Float),
+
+                (BinOpKind::Gt, Type::Int, Type::Int) =>     (TypedBinOpKind::GtI, Type::Int),
+                (BinOpKind::Gt, Type::UInt, Type::UInt) =>   (TypedBinOpKind::GtU, Type::UInt),
+                (BinOpKind::Gt, Type::Float, Type::Float) => (TypedBinOpKind::GtF, Type::Float),
+
+                (BinOpKind::Ge, Type::Int, Type::Int) =>     (TypedBinOpKind::GeI, Type::Int),
+                (BinOpKind::Ge, Type::UInt, Type::UInt) =>   (TypedBinOpKind::GeU, Type::UInt),
+                (BinOpKind::Ge, Type::Float, Type::Float) => (TypedBinOpKind::GeF, Type::Float),
+
+                (BinOpKind::Eq, _, _) => (TypedBinOpKind::Eq, Type::Bool),
+                (BinOpKind::Ne, _, _) => (TypedBinOpKind::Ne, Type::Bool),
                 (a, b, c) => error(pass, &format!("cannot perform binary operation `{:?}` on {:?} and {:?}", a, b, c), &span)
             };
 
             *local_var_idx += result_type.get_size();
             TypedValueExprKind::BinOp(
-                binop_kind.clone(),
+                op_kind.clone(),
                 Box::new(left),
                 Box::new(right),
             ).expr(span, result_type, place)
         }
-        ValueExprKind::UnOp(unop_kind, value) => {
+        ValueExprKind::UnOp(op_kind, value) => {
             let value = visit_value_expr(pass, path.clone(), return_type, scope_expr_idx, &mut local_var_idx.clone(), value);
 
-            let result_type = match (&unop_kind, &value.type_) {
-                (
-                    UnOpKind::Pos | UnOpKind::Neg | UnOpKind::Not,
-                    Type::Float
-                ) => Type::Float,
-                (
-                    UnOpKind::Pos | UnOpKind::Neg | UnOpKind::Not,
-                    Type::Int
-                ) => Type::Float,
-                (
-                    UnOpKind::Pos | UnOpKind::Not,
-                    Type::UInt
-                ) => Type::UInt,
-                (
-                    UnOpKind::Pos | UnOpKind::Not,
-                    Type::Byte
-                ) => Type::Byte,
-                (
-                    UnOpKind::Not,
-                    Type::Bool
-                ) => Type::Bool,
+            let (op_kind, result_type) = match (op_kind, &value.type_) {
+                (UnOpKind::Not, Type::Int) => (TypedUnOpKind::Not, Type::Int),
+                (UnOpKind::Not, Type::UInt) => (TypedUnOpKind::Not, Type::UInt),
+                (UnOpKind::Not, Type::Float) => (TypedUnOpKind::Not, Type::Float),
+                (UnOpKind::Not, Type::Bool) => (TypedUnOpKind::Not, Type::Bool),
+
+                (UnOpKind::Neg, Type::Int) => (TypedUnOpKind::NegI, Type::Int),
+                (UnOpKind::Neg, Type::Float) => (TypedUnOpKind::NegF, Type::Float),
+
+                (UnOpKind::Pos, Type::Int) => return value,
+                (UnOpKind::Pos, Type::UInt) => return value,
+                (UnOpKind::Pos, Type::Float) => return value,
+
                 (a, b) => error(pass, &format!("cannot perform unary operation `{:?}` on {:?}", a, b), &span)
             };
-
             *local_var_idx += result_type.get_size();
             TypedValueExprKind::UnOp(
-                unop_kind.clone(),
+                op_kind,
                 Box::new(value),
             ).expr(span, result_type, place)
         }
@@ -1174,10 +1037,6 @@ pub fn semantic_check(tree: AST) -> Result<TypedAST, Vec<CompilerError>> {
             SemanticValue::Type(Type::Char)
         );
         ctx.set(
-            Path::ROOT.subpath("byte".to_string()),
-            SemanticValue::Type(Type::Byte)
-        );
-        ctx.set(
             Path::ROOT.subpath("str".to_string()),
             SemanticValue::Type(Type::Str)
         );
@@ -1188,10 +1047,6 @@ pub fn semantic_check(tree: AST) -> Result<TypedAST, Vec<CompilerError>> {
         ctx.set(
             Path::ROOT.subpath("value".to_string()),
             SemanticValue::Type(Type::Value)
-        );
-        ctx.set(
-            Path::ROOT.subpath("void".to_string()),
-            SemanticValue::Type(Type::Tuple(vec![])),
         );
     }
 
