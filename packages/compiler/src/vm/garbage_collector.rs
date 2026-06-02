@@ -41,7 +41,7 @@ impl<'obj> Heap<'obj> {
             let mem = alloc(Layout::new::<StringObjectHeader>()) as *mut StringObjectHeader;
             mem.write(header);
             *(*mem).pointers.get_mut() = 0;
-            *(*mem).flag.get_mut() = ObjectFlag::QueueFree;
+            *(*mem).flag.get_mut() = ObjectFlag::New;
             self.strings.push_front(&*mem);
             Value::new_reference(RawValueReference { string: mem.as_ref().unwrap() })
         }

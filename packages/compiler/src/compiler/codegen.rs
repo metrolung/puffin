@@ -145,7 +145,7 @@ fn visit_expr(ctx: &mut FunctionGenContext, expr: TypedValueExpr) -> Result<(), 
                 static_idx
             } else {
                 let string_idx = ctx.string_table.len();
-                ctx.string_table.push(s.into());
+                ctx.string_table.push(ObjectHeader::new_static(s));
                 string_idx
             };
             ctx.instruct(Instruction::LoadString(static_idx));

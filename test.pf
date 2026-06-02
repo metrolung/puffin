@@ -10,33 +10,72 @@
 //    y int
 //}
 
+export readln() str;
+export readi() int;
+export streq(a str, b str) bool;
+export println(s str);
 export concat(a str, b str) str;
 export printi(s value);
-export print(s str);
 
-//
-//fibb(n int) int {
-//    if (n == 0) { return 0 };
-//    if (n == 1) { return 1 };
-//
-//    fibb(n - 1) + fibb(n - 2)
-//}
-//
-//factorial(n int) int {
-//    if (n == 0) { return 1 };
-//    if (n == 1) { return 1 };
-//
-//    n * factorial(n-1)
-//}
+
+fibb(n int) int {
+    if (n == 0) { return 0 }
+    if (n == 1) { return 1 }
+
+    fibb(n - 1) + fibb(n - 2)
+}
+
+factorial(n int) int {
+    if (n == 0) { return 1 }
+    if (n == 1) { return 1 }
+
+    n * factorial(n-1)
+}
 
 
 export main() {
-//    let val = concat("hello ", "world");
+    println("Get factorial of:");
+    let a = readi();
+    printi(factorial(a));
 
-    print(concat("hello ", "world"));
-    print(concat("hello ", "world"));
-    print(concat("hello ", "world"));
-    print(concat("hello ", "world"));
+    println("Get fibbonaci of:");
+    let b = readi();
+    printi(fibb(b));
+
+//    let response = readln();
+
+//    let success = if (response == "yes") {
+//        println("user said yes");
+//        1
+//    } else {
+//        println("user didnt say yes");
+//        0
+//    };
+
+//    printi(success);
+
+    //let response str = readln();
+
+    //let success = if (streq(response, "yes")) {
+    //    println("user said yes");
+    //    1
+    //} else {
+    //    println("user didnt say yes");
+    //    0
+    //};
+
+    //printi(success);
+
+    //let val = concat("hello ", readln());
+
+    //println(val);
+
+    // println(concat("hello ", "world"));
+    // println(concat("hello ", "world"));
+    // println(concat("hello ", "world"));
+    // println(concat("hello ", "world"));
+
+
 
 //    printi(val)
 //

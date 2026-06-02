@@ -1,11 +1,12 @@
-use std::fs::File;
-use std::io::Read;
+use std::fs::{read_link, File};
+use std::io::{stdin, Read};
+use std::str::FromStr;
 use compiler::compiler::lexer::{lex, Source};
 use compiler::compiler::parser::parse;
 use compiler::compiler::semantics::semantic_check;
 
 use clap::Parser;
-use compiler::common::raw_value::ValueArray;
+use compiler::common::raw_value::{RawValuePrimitive, Value, ValueArray};
 use compiler::common::value::ObjectHeader;
 use compiler::compiler::codegen::codegen;
 use compiler::vm::callable::{FunctionHelper};
@@ -66,16 +67,48 @@ fn main() {
         Ok(vec![].into())
     })).expect("linking error");
 
-    program.link_function("package::print".to_string(), FunctionHelper::new(|_, params| {
+    program.link_function("package::println".to_string(), FunctionHelper::new(|_, params| {
         println!("{}", unsafe { &params[0].reference().unwrap().string.value });
         Ok(vec![].into())
+    })).expect("linking error");
+
+    program.link_function("package::streq".to_string(), FunctionHelper::new(|_, params| {
+        let string0 = unsafe { &params[0].reference().unwrap().string.value };
+        let string1 = unsafe { &params[1].reference().unwrap().string.value };
+        Ok(vec![
+            Value::from((string0 == string1).into()).strong(),
+        ].into())
+    })).expect("linking error");
+
+    program.link_function("package::readln".to_string(), FunctionHelper::new(|ctx, params| {
+        let mut s = String::new();
+        stdin().read_line(&mut s).expect("reading stdin");
+        s.remove(s.len() - 1);
+
+        let s = ctx.runtime.heap.new_string(ObjectHeader::new(s));
+
+        Ok(vec![
+            s.strong()
+        ].into())
+    })).expect("linking error");
+
+    program.link_function("package::readi".to_string(), FunctionHelper::new(|ctx, params| {
+        let mut s = String::new();
+        stdin().read_line(&mut s).expect("reading stdin");
+        s.remove(s.len() - 1);
+
+        let i = Value::from(i64::from_str(&s).expect("could not read int").into());
+
+        Ok(vec![
+            i.strong()
+        ].into())
     })).expect("linking error");
 
     program.link_function("package::concat".to_string(), FunctionHelper::new(|ctx, params| {
         let string0 = unsafe { &params[0].reference().unwrap().string.value };
         let string1 = unsafe { &params[1].reference().unwrap().string.value };
 
-        let result = ctx.runtime.heap.new_string(format!("{}{}", string0, string1).to_string().into()).strong();
+        let result = ctx.runtime.heap.new_string(ObjectHeader::new(format!("{}{}", string0, string1).to_string())).strong();
 
         Ok(vec![
             result
@@ -89,14 +122,4 @@ fn main() {
     program.execute(&mut heap, "package::main").expect("runtime error");
 
     drop(heap);
-    //
-    // let mut linker = HashLinker::new();
-    // linker.link(
-    //     "print".to_string(),
-    //     Value::function(&print_func as *const GCFunction)
-    // );
-
-    // let execution_result = result.execute(&linker);
-
-    // drop(print_func)
 }

@@ -213,7 +213,7 @@ impl PuffinCallable for PuffinFunction {
                 }
                 Instruction::Test => {
                     let test_value = runtime.stack.pop()?;
-                    if test_value.primitive().uint() != 0 {
+                    if unsafe { test_value.primitive().bool() } != false {
                         instruction_idx += 1
                     }
                 }

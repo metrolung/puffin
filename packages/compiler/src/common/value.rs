@@ -36,7 +36,15 @@ pub union AmbiguousObject<'obj> {
 impl<T> ObjectHeader<T> {
     pub fn new(value: T) -> Self {
         Self {
-            flag: UnsafeCell::new(ObjectFlag::QueueFree),
+            flag: UnsafeCell::new(ObjectFlag::New),
+            pointers: UnsafeCell::new(0),
+            value,
+        }
+    }
+
+    pub fn new_static(value: T) -> Self {
+        Self {
+            flag: UnsafeCell::new(ObjectFlag::Static),
             pointers: UnsafeCell::new(0),
             value,
         }
@@ -61,11 +69,12 @@ impl<T> ObjectHeader<T> {
 pub enum ObjectFlag {
     QueueFree,
     Preserve,
-    Static
+    Static,
+    New
 }
 
-impl Into<StringObjectHeader> for String {
-    fn into(self) -> StringObjectHeader {
-        ObjectHeader::new(self)
-    }
-}
+// impl Into<StringObjectHeader> for String {
+//     fn into(self) -> StringObjectHeader {
+//         ObjectHeader::new(self)
+//     }
+// }

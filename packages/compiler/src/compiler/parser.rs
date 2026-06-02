@@ -270,7 +270,12 @@ fn block(ctx: &mut ParseContext) -> Result<ValueExpr> {
         if is_upcoming(ctx, TokenKind::Semicolon)? {
             next(ctx)?;
         } else {
-            let next_statement = value_expr(ctx)?;
+            let (next_statement, required_semi) = if is_upcoming(ctx, TokenKind::If)? {
+                if_statement(ctx)?
+            } else {
+                (value_expr(ctx)?, true)
+            };
+
             if is_upcoming(ctx, TokenKind::RCurly)? {
                 let end = next(ctx)?.span;
                 let span = start.span(&end);
@@ -278,7 +283,10 @@ fn block(ctx: &mut ParseContext) -> Result<ValueExpr> {
                 return Ok(ValueExprKind::Block(statements, Some(Box::new(next_statement))).expr(span))
             }
             statements.push(next_statement);
-            eat(ctx, TokenKind::Semicolon)?;
+
+            if required_semi {
+                eat(ctx, TokenKind::Semicolon)?;
+            }
         }
     }
 
@@ -299,6 +307,37 @@ fn type_expr(ctx: &mut ParseContext) -> Result<TypeExpr> {
                 Ok(TypeExprKind::Variable(name.clone()).expr(token.span)),
             _ => bail!("expected type")
         }
+    }
+}
+
+fn if_statement(ctx: &mut ParseContext) -> Result<(ValueExpr, bool)> {
+    let start = eat(ctx, TokenKind::If)?.span;
+
+    let cond = if is_upcoming(ctx, TokenKind::Bang)? {
+        let start = next(ctx)?.span;
+        eat(ctx, TokenKind::LParen)?;
+        let cond = value_expr(ctx)?;
+        let end = eat(ctx, TokenKind::RParen)?.span;
+        ValueExprKind::UnOp(UnOpKind::Neg, Box::new(cond)).expr(start.span(&end))
+    } else {
+        eat(ctx, TokenKind::LParen)?;
+        let cond = value_expr(ctx)?;
+        eat(ctx, TokenKind::RParen)?;
+        cond
+    };
+
+    let main_block = value_expr(ctx)?;
+
+    if is_upcoming(ctx, TokenKind::Else)? {
+        next(ctx)?;
+        let else_block = value_expr(ctx)?;
+        let span = start.span(&else_block.span);
+        let requires_semi = !matches!(else_block.kind, ValueExprKind::Block(_, _));
+        Ok((ValueExprKind::If(Box::new(cond), Box::new(main_block), Some(Box::new(else_block))).expr(span), requires_semi))
+    } else {
+        let span = start.span(&main_block.span);
+        let requires_semi = !matches!(main_block.kind, ValueExprKind::Block(_, _));
+        Ok((ValueExprKind::If(Box::new(cond), Box::new(main_block), None).expr(span), requires_semi))
     }
 }
 
@@ -338,34 +377,7 @@ fn value(ctx: &mut ParseContext) -> Result<ValueExpr> {
             let span = start.span(&expr.span);
             Ok(ValueExprKind::Return(Some(Box::new(expr))).expr(span))
         }
-        TokenKind::If => {
-            let start = next(ctx)?.span;
-
-            let cond = if is_upcoming(ctx, TokenKind::Bang)? {
-                let start = next(ctx)?.span;
-                eat(ctx, TokenKind::LParen)?;
-                let cond = value_expr(ctx)?;
-                let end = eat(ctx, TokenKind::RParen)?.span;
-                ValueExprKind::UnOp(UnOpKind::Neg, Box::new(cond)).expr(start.span(&end))
-            } else {
-                eat(ctx, TokenKind::LParen)?;
-                let cond = value_expr(ctx)?;
-                eat(ctx, TokenKind::RParen)?;
-                cond
-            };
-
-            let block = value_expr(ctx)?;
-
-            if is_upcoming(ctx, TokenKind::Else)? {
-                next(ctx)?;
-                let else_block = value_expr(ctx)?;
-                let span = start.span(&else_block.span);
-                Ok(ValueExprKind::If(Box::new(cond), Box::new(block), Some(Box::new(else_block))).expr(span))
-            } else {
-                let span = start.span(&block.span);
-                Ok(ValueExprKind::If(Box::new(cond), Box::new(block), None).expr(span))
-            }
-        }
+        TokenKind::If => Ok(if_statement(ctx)?.0),
         _ => {
             let token = next(ctx)?;
 

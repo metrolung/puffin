@@ -823,6 +823,8 @@ fn visit_value_expr(
 
                 let common_type = get_common_type(pass, &span, main_branch.type_.clone(), else_branch.type_.clone());
 
+                *local_var_idx += common_type.get_size();
+
                 TypedValueExprKind::If(
                     Box::new(cond),
                     Box::new(cast(pass, &main_branch.span.clone(), main_branch, common_type.clone())),

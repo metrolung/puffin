@@ -166,8 +166,8 @@ pub union RawValuePrimitive {
     uint: u64,
     int: i64,
     float: OrderedFloat<f64>,
-    pub char: char,
-    pub bool: bool,
+    char: char,
+    bool: bool,
 }
 
 impl RawValuePrimitive {
@@ -179,6 +179,12 @@ impl RawValuePrimitive {
     }
     pub fn float(self) -> OrderedFloat<f64> {
         unsafe { self.float }
+    }
+    pub unsafe fn bool(self) -> bool {
+        unsafe { self.bool }
+    }
+    pub unsafe fn char(self) -> char {
+        unsafe { self.char }
     }
 }
 
@@ -197,6 +203,12 @@ impl RawValue<'_> {
     }
     pub fn float(self) -> OrderedFloat<f64> {
         unsafe { self.p.float }
+    }
+    pub unsafe fn bool(self) -> bool {
+        unsafe { self.p.bool }
+    }
+    pub unsafe fn char(self) -> char {
+        unsafe { self.p.char }
     }
 }
 
