@@ -15,38 +15,41 @@ export printi(s value);
 
 
 
+
 //
-////
-//fibb(n int) int {
-//    if (n == 0) { return 0 }
-//    if (n == 1) { return 1 }
-//
-//    fibb(n - 1) + fibb(n - 2)
-//}
-//
-//factorial(n int) int {
-//    if (n == 0) { return 1 }
-//    if (n == 1) { return 1 }
-//
-//    n * factorial(n-1)
-//}
-//
-//tuple_test(x [int, str]) {
-//    printi(x.0);
-//    println(x.1);
-//}
+fibb(n int) int {
+    if (n == 0) { return 0 }
+    if (n == 1) { return 1 }
+
+    fibb(n - 1) + fibb(n - 2)
+}
+
+factorial(n int) int {
+    if (n == 0) { return 1 }
+    if (n == 1) { return 1 }
+
+    n * factorial(n-1)
+}
+
+tuple_test(x [[int, float], str]) {
+    printi((x.0).0);
+    printi((x.0).1);
+    println(x.1);
+}
 
 export main() {
-//    tuple_test((1, "2"));
-//
-//    println("Get factorial of:");
-//    let factorial_test = readi();
-//    printi(factorial(factorial_test));
-//
-//    println("Get fibbonaci of:");
-//    let fibb_test = readi();
-//    printi(fibb(fibb_test));
-//
+    let tuple [[int, float], str] = ((1, 2.0), "aa");
+
+    tuple_test(tuple);
+
+    println("Get factorial of:");
+    let factorial_test = readi();
+    printi(factorial(factorial_test));
+
+    println("Get fibbonaci of:");
+    let fibb_test = readi();
+    printi(fibb(fibb_test));
+
     println("Do you like this program?");
     let result = readln();
     if (streq(result, "yes")) {
@@ -55,11 +58,3 @@ export main() {
         println("Die");
     }
 }
-
-//export main() {
-//    if (true) {
-//        println("yo")
-//    } else {
-//        println("yo")
-//    }
-//}

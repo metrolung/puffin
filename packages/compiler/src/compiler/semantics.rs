@@ -466,9 +466,6 @@ fn visit_value_expr(
             }
 
             let type_ = Type::Tuple(typed_exprs.iter().map(|a| a.type_.clone()).collect());
-            let size = type_.get_size();
-
-            *local_var_idx += size;
 
             TypedValueExprKind::Tuple(typed_exprs)
                 .expr(span, type_, place)
