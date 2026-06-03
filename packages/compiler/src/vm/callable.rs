@@ -105,7 +105,7 @@ pub struct PuffinProgram {
 
 impl PuffinProgram {
     pub fn link_function(&mut self, name: String, callable: CallableObjectHeader) -> Result<(), RuntimeError> {
-        let function_idx = self.function_lookup.get(&name).ok_or(RuntimeError("could not find function".to_string()))?;
+        let function_idx = self.function_lookup.get(&name).ok_or(RuntimeError(format!("could not find function {}", name)))?;
         self.function_table[*function_idx] = callable;
 
         Ok(())
@@ -118,7 +118,7 @@ impl PuffinProgram {
             stack: Stack::new(),
         };
 
-        let function_idx = self.function_lookup.get(name).ok_or(RuntimeError("could not find function".to_string()))?;
+        let function_idx = self.function_lookup.get(name).ok_or(RuntimeError(format!("could not find function {}", name)))?;
         let function = &self.function_table[*function_idx];
         function.value.invoke(&mut puffin_thread, 0)?;
 

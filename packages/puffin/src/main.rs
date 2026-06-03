@@ -117,6 +117,8 @@ fn main() {
 
     println!("{:#?}", program);
 
+    println!("^^^ debug info\n\n\n");
+
     let mut heap = Heap::new();
 
     program.execute(&mut heap, "package::main").expect("runtime error");

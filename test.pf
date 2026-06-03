@@ -1,15 +1,7 @@
 
 
 
-
-
-
-
-//struct Vec2 {
-//    x int,
-//    y int
-//}
-
+// IGNORE THESE. i havent implemented proper libraries yet so i have to manually define them.
 export readln() str;
 export readi() int;
 export streq(a str, b str) bool;
@@ -32,74 +24,28 @@ factorial(n int) int {
     n * factorial(n-1)
 }
 
+tuple_test(x [int, str]) {
+    printi(x.0);
+    println(x.1);
+}
+
 
 export main() {
+    tuple_test((1, "2"));
+
     println("Get factorial of:");
-    let a = readi();
-    printi(factorial(a));
+    let factorial_test = readi();
+    printi(factorial(factorial_test));
 
     println("Get fibbonaci of:");
-    let b = readi();
-    printi(fibb(b));
+    let fibb_test = readi();
+    printi(fibb(fibb_test));
 
-//    let response = readln();
-
-//    let success = if (response == "yes") {
-//        println("user said yes");
-//        1
-//    } else {
-//        println("user didnt say yes");
-//        0
-//    };
-
-//    printi(success);
-
-    //let response str = readln();
-
-    //let success = if (streq(response, "yes")) {
-    //    println("user said yes");
-    //    1
-    //} else {
-    //    println("user didnt say yes");
-    //    0
-    //};
-
-    //printi(success);
-
-    //let val = concat("hello ", readln());
-
-    //println(val);
-
-    // println(concat("hello ", "world"));
-    // println(concat("hello ", "world"));
-    // println(concat("hello ", "world"));
-    // println(concat("hello ", "world"));
-
-
-
-//    printi(val)
-//
-//    print(concat("helloo", "world"));
-
-//    print("\n\n\nfibonacci tests");
-//    printi(fibb(0));
-//    printi(fibb(1));
-//    printi(fibb(2));
-//    printi(fibb(3));
-//    printi(fibb(4));
-//    printi(fibb(5));
-//    printi(fibb(6));
-//    printi(fibb(7));
-//    printi(fibb(8));
-//
-//    print("\nfactorial tests");
-//    printi(factorial(0));
-//    printi(factorial(1));
-//    printi(factorial(2));
-//    printi(factorial(3));
-//    printi(factorial(4));
-//    printi(factorial(5));
-//    printi(factorial(6));
-//    printi(factorial(7));
-//    printi(factorial(8));
+    println("Do you like this program?");
+    let result = readln();
+    if (streq(result, "yes")) {
+        println("OK. thank you");
+    } else {
+        println("Die");
+    };
 }

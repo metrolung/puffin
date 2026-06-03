@@ -931,9 +931,14 @@ fn definition(pass: &DefinitionPass, path: Path) -> Result<(), CompilerError> {
             return_type,
             param_bindings,
             statement,
-            export: exposed,
+            export,
         } => {
             let func_path = path.subpath(name.clone());
+            let export_name = if *export {
+                Some(func_path.to_string())
+            } else {
+                None
+            };
 
             let return_type = if let Some(expr) = &return_type {
                 visit_type_expr(pass, path.clone(), expr)
@@ -967,7 +972,7 @@ fn definition(pass: &DefinitionPass, path: Path) -> Result<(), CompilerError> {
                 function_idx
             });
 
-            if let Some(statement) = statement {
+            let func = (if let Some(statement) = statement {
                 let statement =
                     visit_value_expr(
                         pass,
@@ -978,17 +983,19 @@ fn definition(pass: &DefinitionPass, path: Path) -> Result<(), CompilerError> {
                         statement
                     );
 
-
-                borrow_ctx(pass).resulting_ast.functions.push(TypedFunction {
-                    export_name: exposed.then(|| func_path.to_string()),
+                TypedFunction {
+                    export_name,
                     body: Some(statement)
-                })
+                }
             } else {
-                borrow_ctx(pass).resulting_ast.functions.push(TypedFunction {
-                    export_name: exposed.then(|| func_path.to_string()),
+                TypedFunction {
+                    export_name,
                     body: None
-                })
-            }
+                }
+            });
+
+            borrow_ctx(pass).resulting_ast.functions.push(func);
+
         }
         _ => todo!(),
     }

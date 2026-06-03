@@ -269,24 +269,25 @@ fn block(ctx: &mut ParseContext) -> Result<ValueExpr> {
     while !is_upcoming(ctx, TokenKind::RCurly)? {
         if is_upcoming(ctx, TokenKind::Semicolon)? {
             next(ctx)?;
+            continue;
+        }
+
+        let (next_statement, required_semi) = if is_upcoming(ctx, TokenKind::If)? {
+            if_statement(ctx)?
         } else {
-            let (next_statement, required_semi) = if is_upcoming(ctx, TokenKind::If)? {
-                if_statement(ctx)?
-            } else {
-                (value_expr(ctx)?, true)
-            };
+            (value_expr(ctx)?, true)
+        };
 
-            if is_upcoming(ctx, TokenKind::RCurly)? {
-                let end = next(ctx)?.span;
-                let span = start.span(&end);
+        if is_upcoming(ctx, TokenKind::RCurly)? {
+            let end = next(ctx)?.span;
+            let span = start.span(&end);
 
-                return Ok(ValueExprKind::Block(statements, Some(Box::new(next_statement))).expr(span))
-            }
-            statements.push(next_statement);
+            return Ok(ValueExprKind::Block(statements, Some(Box::new(next_statement))).expr(span))
+        }
+        statements.push(next_statement);
 
-            if required_semi {
-                eat(ctx, TokenKind::Semicolon)?;
-            }
+        if required_semi {
+            eat(ctx, TokenKind::Semicolon)?;
         }
     }
 
@@ -610,7 +611,7 @@ fn value_expr(ctx: &mut ParseContext) -> Result<ValueExpr> {
 }
 
 fn func_statement(ctx: &mut ParseContext) -> Result<Statement> {
-    let exposed = if is_upcoming(ctx, TokenKind::Export)? {
+    let export = if is_upcoming(ctx, TokenKind::Export)? {
         next(ctx)?;
         true
     } else {
@@ -649,7 +650,7 @@ fn func_statement(ctx: &mut ParseContext) -> Result<Statement> {
             return_type: None,
             param_bindings,
             statement: None,
-            export: exposed,
+            export,
         }.statement(position))
     }
 
@@ -662,7 +663,7 @@ fn func_statement(ctx: &mut ParseContext) -> Result<Statement> {
             return_type: None,
             param_bindings,
             statement: Some(block),
-            export: exposed,
+            export,
         }.statement(position));
     }
 
@@ -677,7 +678,7 @@ fn func_statement(ctx: &mut ParseContext) -> Result<Statement> {
             return_type: Some(return_type),
             param_bindings,
             statement: Some(block),
-            export: exposed,
+            export,
         }.statement(position))
     }
 
@@ -689,7 +690,7 @@ fn func_statement(ctx: &mut ParseContext) -> Result<Statement> {
         return_type: Some(return_type),
         param_bindings,
         statement: None,
-        export: exposed,
+        export,
     }.statement(position))
 }
 
@@ -799,7 +800,7 @@ fn definition(ctx: &mut ParseContext) -> Result<Statement> {
         interface_statement(ctx)
     } else if peeked.kind == TokenKind::Const {
         const_statement(ctx)
-    } else if matches!(peeked.kind, TokenKind::LParen | TokenKind::Identifier(..) | TokenKind::Export) {
+    } else if matches!(peeked.kind, TokenKind::Identifier(..) | TokenKind::Export) {
         func_statement(ctx)
     } else {
         bail!("expected definition")
