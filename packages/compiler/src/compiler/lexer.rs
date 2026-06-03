@@ -389,7 +389,7 @@ fn read_symbol_or_comment(ctx: &mut LexContext) -> Result<()> {
             if ctx.peek() == Some(&'/') {
                 ctx.next();
 
-                while ctx.peek() != Some(&'\n') {
+                while ctx.peek().is_some_and(|c| *c != '\n') {
                     ctx.next();
                 }
 

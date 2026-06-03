@@ -9,7 +9,7 @@ use std::process::{ExitCode, Termination};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread::scope;
-
+use anyhow::bail;
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 // use corosensei::{Coroutine, Yielder};
 use crate::common::value::{ ObjectHeader};
@@ -261,7 +261,7 @@ pub struct TypedAST {
 
 struct DefinitionPass<'pass> {
     ctx: Rc<RefCell<SemanticContext>>,
-    def: Statement,
+    statement: Statement,
     yielder: &'pass Yielder<(), DefinitionStateKind>
 }
 
@@ -585,7 +585,7 @@ fn visit_value_expr(
             if let Some(tail) = tail {
                 let tail = visit_value_expr(
                     pass,
-                    path,
+                    branch_path.clone(),
                     return_type,
                     &mut scope_expr_idx,
                     &mut block_var_idx,
@@ -858,10 +858,10 @@ fn error(pass: &DefinitionPass, message: &str, span: &SpanPosition) -> ! {
     unreachable!()
 }
 
-fn definition(pass: &DefinitionPass, path: Path) -> Result<(), CompilerError> {
-    let span = &pass.def.span;
+fn statement(pass: &DefinitionPass, path: Path) -> Result<(), CompilerError> {
+    let span = &pass.statement.span;
 
-    match &pass.def.kind {
+    match &pass.statement.kind {
         StatementKind::ConstStatement {
             name,
             const_type,
@@ -972,16 +972,15 @@ fn definition(pass: &DefinitionPass, path: Path) -> Result<(), CompilerError> {
                 function_idx
             });
 
-            let func = (if let Some(statement) = statement {
-                let statement =
-                    visit_value_expr(
-                        pass,
-                        func_path.clone(),
-                        Some(&return_type),
-                        &mut 0,
-                        &mut local_var_idx,
-                        statement
-                    );
+            let func = if let Some(statement) = statement {
+                let statement = visit_value_expr(
+                    pass,
+                    func_path.clone(),
+                    Some(&return_type),
+                    &mut 0,
+                    &mut local_var_idx,
+                    statement
+                );
 
                 TypedFunction {
                     export_name,
@@ -992,10 +991,9 @@ fn definition(pass: &DefinitionPass, path: Path) -> Result<(), CompilerError> {
                     export_name,
                     body: None
                 }
-            });
+            };
 
             borrow_ctx(pass).resulting_ast.functions.push(func);
-
         }
         _ => todo!(),
     }
@@ -1065,10 +1063,10 @@ pub fn semantic_check(tree: AST) -> Result<TypedAST, Vec<CompilerError>> {
         let ctx_clone = Rc::clone(&ctx);
 
         let generator = Coroutine::new(|yielder, _| {
-            let err = definition(
+            let err = statement(
                 &DefinitionPass {
                     ctx: ctx_clone,
-                    def,
+                    statement: def,
                     yielder: &yielder
                 },
                 Path::ROOT.subpath("package".to_string())
@@ -1101,9 +1099,9 @@ pub fn semantic_check(tree: AST) -> Result<TypedAST, Vec<CompilerError>> {
                     state.kind = state.generator.resume(()).get_value();
                 }
                 DefinitionStateKind::PendingDefinition(path, name) => {
+                    possibly_finished = false;
                     if find(&mut ctx.borrow_mut(), path.clone(), name.clone()).is_some() {
                         possibly_frozen = false;
-                        possibly_finished = false;
                         state.kind = state.generator.resume(()).get_value();
                     }
                 }
@@ -1120,15 +1118,20 @@ pub fn semantic_check(tree: AST) -> Result<TypedAST, Vec<CompilerError>> {
         }
 
         if possibly_frozen {
+            errors.push(CompilerError {
+                message: "Circular resolution could not be solved".to_string(),
+                span: SpanPosition::DUMMY,
+            });
+
             break;
         }
     }
 
     let mut ctx = ctx.borrow_mut();
 
-    let namespace = &ctx.namespace;
+    //let namespace = &ctx.namespace;
 
-    println!("{:#?}", namespace);
+    //println!("{:#?}", namespace);
 
     if !errors.is_empty() {
         return Err(errors);

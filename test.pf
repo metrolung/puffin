@@ -1,6 +1,8 @@
 
 
 
+
+
 // IGNORE THESE. i havent implemented proper libraries yet so i have to manually define them.
 export readln() str;
 export readi() int;
@@ -10,42 +12,54 @@ export concat(a str, b str) str;
 export printi(s value);
 
 
-fibb(n int) int {
-    if (n == 0) { return 0 }
-    if (n == 1) { return 1 }
 
-    fibb(n - 1) + fibb(n - 2)
-}
 
-factorial(n int) int {
-    if (n == 0) { return 1 }
-    if (n == 1) { return 1 }
 
-    n * factorial(n-1)
-}
-
-tuple_test(x [int, str]) {
-    printi(x.0);
-    println(x.1);
-}
-
+//
+////
+//fibb(n int) int {
+//    if (n == 0) { return 0 }
+//    if (n == 1) { return 1 }
+//
+//    fibb(n - 1) + fibb(n - 2)
+//}
+//
+//factorial(n int) int {
+//    if (n == 0) { return 1 }
+//    if (n == 1) { return 1 }
+//
+//    n * factorial(n-1)
+//}
+//
+//tuple_test(x [int, str]) {
+//    printi(x.0);
+//    println(x.1);
+//}
 
 export main() {
-    tuple_test((1, "2"));
-
-    println("Get factorial of:");
-    let factorial_test = readi();
-    printi(factorial(factorial_test));
-
-    println("Get fibbonaci of:");
-    let fibb_test = readi();
-    printi(fibb(fibb_test));
-
+//    tuple_test((1, "2"));
+//
+//    println("Get factorial of:");
+//    let factorial_test = readi();
+//    printi(factorial(factorial_test));
+//
+//    println("Get fibbonaci of:");
+//    let fibb_test = readi();
+//    printi(fibb(fibb_test));
+//
     println("Do you like this program?");
     let result = readln();
     if (streq(result, "yes")) {
         println("OK. thank you");
     } else {
         println("Die");
-    };
+    }
 }
+
+//export main() {
+//    if (true) {
+//        println("yo")
+//    } else {
+//        println("yo")
+//    }
+//}
